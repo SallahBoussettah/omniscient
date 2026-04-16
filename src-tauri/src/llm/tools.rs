@@ -390,21 +390,7 @@ async fn update_memory_tool(
         .and_then(Value::as_str)
         .ok_or("Missing 'new_content'")?;
 
-    let pattern = format!("%{}%", search.to_lowercase());
-
-    // Find the matching memory
-    let row: Option<(String, String)> = {
-        let conn = db.conn();
-        conn.query_row(
-            "SELECT id, content FROM memories
-             WHERE is_dismissed = 0 AND LOWER(content) LIKE ?1
-             ORDER BY created_at DESC LIMIT 1",
-            [&pattern],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .ok()
-    };
-
+    let row = find_memory(search, db, embedder).await?;
     let Some((id, original)) = row else {
         return Ok(format!("No memory matching '{}' found.", search));
     };
@@ -427,25 +413,17 @@ async fn update_memory_tool(
     ))
 }
 
-async fn delete_memory_tool(args: &Value, db: &Arc<Database>) -> Result<String, String> {
+async fn delete_memory_tool(
+    args: &Value,
+    db: &Arc<Database>,
+) -> Result<String, String> {
     let search = args
         .get("search")
         .and_then(Value::as_str)
         .ok_or("Missing 'search'")?;
 
-    let pattern = format!("%{}%", search.to_lowercase());
-
-    let row: Option<(String, String)> = {
-        let conn = db.conn();
-        conn.query_row(
-            "SELECT id, content FROM memories
-             WHERE is_dismissed = 0 AND LOWER(content) LIKE ?1
-             ORDER BY created_at DESC LIMIT 1",
-            [&pattern],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .ok()
-    };
+    // Use word-AND search (no embedder needed for delete — keep it simple)
+    let row: Option<(String, String)> = find_memory_by_words(search, db);
 
     let Some((id, content)) = row else {
         return Ok(format!("No memory matching '{}' found.", search));
@@ -560,4 +538,94 @@ async fn create_memory(
     let _ = rag::store_embedding(embedder, db, "memory", &id, content).await;
 
     Ok(format!("Memory saved: \"{}\"", content))
+}
+
+// ============================================================
+// Smart memory finder
+//
+// Strategy:
+// 1. Try LIKE substring (whole search string)
+// 2. If miss, split into words and require all words present in any order
+// 3. If still miss, fall back to embedding similarity (top-1 above 0.5)
+// ============================================================
+
+fn split_keywords(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2) // skip noise like "a", "of", "to"
+        .map(String::from)
+        .collect()
+}
+
+/// Try LIKE-substring then word-AND match. No embeddings, sync.
+fn find_memory_by_words(search: &str, db: &Arc<Database>) -> Option<(String, String)> {
+    let conn = db.conn();
+
+    // Pass 1: substring match
+    let pattern = format!("%{}%", search.to_lowercase());
+    if let Ok(row) = conn.query_row(
+        "SELECT id, content FROM memories
+         WHERE is_dismissed = 0 AND LOWER(content) LIKE ?1
+         ORDER BY created_at DESC LIMIT 1",
+        [&pattern],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ) {
+        return Some(row);
+    }
+
+    // Pass 2: all-words match
+    let words = split_keywords(search);
+    if words.is_empty() {
+        return None;
+    }
+
+    let mut sql = String::from(
+        "SELECT id, content FROM memories WHERE is_dismissed = 0",
+    );
+    let mut params: Vec<String> = Vec::new();
+    for w in &words {
+        sql.push_str(" AND LOWER(content) LIKE ?");
+        params.push(format!("%{}%", w));
+    }
+    sql.push_str(" ORDER BY created_at DESC LIMIT 1");
+
+    let mut stmt = conn.prepare(&sql).ok()?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    stmt.query_row(&*param_refs, |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })
+    .ok()
+}
+
+/// Try LIKE → word-AND → embedding-similarity. Async because of embeddings.
+async fn find_memory(
+    search: &str,
+    db: &Arc<Database>,
+    embedder: &Embedder,
+) -> Result<Option<(String, String)>, String> {
+    if let Some(hit) = find_memory_by_words(search, db) {
+        return Ok(Some(hit));
+    }
+
+    // Pass 3: semantic search via embeddings
+    let hits = rag::search(embedder, db, search, 3).await?;
+    for hit in hits {
+        if hit.entity_type == "memory" && hit.score > 0.5 {
+            // Look up the memory by id to get the canonical content
+            let conn = db.conn();
+            let row = conn
+                .query_row(
+                    "SELECT id, content FROM memories WHERE id = ?1 AND is_dismissed = 0",
+                    [&hit.entity_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .ok();
+            if row.is_some() {
+                return Ok(row);
+            }
+        }
+    }
+
+    Ok(None)
 }
