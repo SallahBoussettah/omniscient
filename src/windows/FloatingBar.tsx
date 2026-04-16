@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   startRecording,
   stopRecording,
@@ -94,6 +95,18 @@ export function FloatingBar() {
 
   function handleHover() {
     if (mode === "compact") setMode("expanded");
+  }
+
+  // Explicit Tauri startDragging — `data-tauri-drag-region` is unreliable on
+  // Wayland; calling it programmatically from a mousedown event works.
+  async function startDrag(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    try {
+      await getCurrentWindow().startDragging();
+    } catch (err) {
+      console.error("Drag failed:", err);
+    }
   }
 
   function handleLeave() {
@@ -212,7 +225,11 @@ export function FloatingBar() {
   // ---------- COMPACT ----------
   if (mode === "compact") {
     return (
-      <div className="fb-root" onMouseEnter={handleHover} data-tauri-drag-region>
+      <div
+        className="fb-root"
+        onMouseEnter={handleHover}
+        onMouseDown={startDrag}
+      >
         <div className="fb-pill" />
       </div>
     );
@@ -222,7 +239,7 @@ export function FloatingBar() {
   return (
     <div className="fb-root fb-expanded" onMouseLeave={handleLeave}>
       {/* drag handle */}
-      <div className="fb-drag" data-tauri-drag-region />
+      <div className="fb-drag" onMouseDown={startDrag} />
 
       {mode === "answer" && answer && (
         <div className="fb-answer">{answer}</div>
@@ -309,21 +326,36 @@ export function FloatingBar() {
         </button>
       </div>
 
-      {/* Subtle session indicator */}
+      {/* Session indicator — small badge near the input */}
       {sessionId && mode !== "recording" && (
         <div
           style={{
             position: "absolute",
-            bottom: 4,
-            left: 12,
+            top: 4,
+            left: 10,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
             fontSize: 9,
-            color: "var(--text-4)",
-            letterSpacing: "0.05em",
+            fontWeight: 500,
+            color: "var(--accent)",
+            background: "var(--accent-soft)",
+            padding: "2px 6px",
+            borderRadius: 999,
+            letterSpacing: "0.04em",
             textTransform: "uppercase",
             pointerEvents: "none",
           }}
         >
-          continuing chat
+          <span
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: "50%",
+              background: "var(--accent)",
+            }}
+          />
+          chat
         </div>
       )}
     </div>
