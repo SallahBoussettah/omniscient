@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import {
   startRecording,
   stopRecording,
   cancelRecording,
@@ -200,8 +205,17 @@ export function ConversationsPage({ onOpenConversation }: Props) {
           await processConversation(convId);
           await loadData();
           setLiveTranscript([]);
+          // Notify if user has navigated away or the app isn't focused
+          await notifyIfBackground(
+            "Conversation processed",
+            "Memories and tasks extracted from your last recording."
+          );
         } catch (e) {
           console.error("Failed to process conversation:", e);
+          await notifyIfBackground(
+            "Processing failed",
+            "Couldn't process your conversation. Open Omniscient to retry."
+          );
         }
         setProcessing(false);
       } else if (convId) {
@@ -271,6 +285,22 @@ export function ConversationsPage({ onOpenConversation }: Props) {
   function log(...args: unknown[]) {
     // eslint-disable-next-line no-console
     console.log("[Omniscient]", ...args);
+  }
+
+  // Fire a desktop notification ONLY if the main window isn't focused.
+  // No point notifying the user about something they're already looking at.
+  async function notifyIfBackground(title: string, body: string) {
+    try {
+      if (document.hasFocus()) return;
+      let granted = await isPermissionGranted();
+      if (!granted) {
+        const result = await requestPermission();
+        granted = result === "granted";
+      }
+      if (granted) sendNotification({ title, body });
+    } catch {
+      /* ignore */
+    }
   }
 
   // Group conversations by date bucket (newest first within each)

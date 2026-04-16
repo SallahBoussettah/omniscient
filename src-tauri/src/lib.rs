@@ -3,7 +3,7 @@ mod db;
 mod llm;
 
 use audio::capture::SpeechBuffer;
-use audio::transcribe::{self, TranscriptSegment, Transcriber};
+use audio::transcribe::{self, Transcriber, TranscriptSegment};
 use audio::vad::Vad;
 use audio::AudioState;
 use cpal::Stream;
@@ -350,8 +350,10 @@ fn search_conversations(
     for id in &fts_ids {
         params.push(Box::new(id.clone()));
     }
-    let param_refs: Vec<&dyn rusqlite::ToSql> =
-        params.iter().map(|p| p.as_ref() as &dyn rusqlite::ToSql).collect();
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params
+        .iter()
+        .map(|p| p.as_ref() as &dyn rusqlite::ToSql)
+        .collect();
 
     let rows: Vec<serde_json::Value> = stmt
         .query_map(&*param_refs, |row| {
@@ -732,9 +734,7 @@ async fn chat_send(
     let history: Vec<ChatMessage> = {
         let conn = db.conn();
         let mut stmt = conn
-            .prepare(
-                "SELECT sender, text FROM messages WHERE session_id = ?1 ORDER BY created_at",
-            )
+            .prepare("SELECT sender, text FROM messages WHERE session_id = ?1 ORDER BY created_at")
             .map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map([&session_id], |row| {
@@ -762,7 +762,8 @@ async fn chat_send(
     }
 
     // Run RAG chat
-    let (answer, sources) = rag::chat_with_context(&llm, &embedder, &db.inner().clone(), &history, &message).await?;
+    let (answer, sources) =
+        rag::chat_with_context(&llm, &embedder, &db.inner().clone(), &history, &message).await?;
 
     // Persist assistant message
     let asst_msg_id = uuid::Uuid::new_v4().to_string();
@@ -859,10 +860,7 @@ fn delete_chat_session(
 }
 
 #[tauri::command]
-fn delete_conversation(
-    id: String,
-    db: tauri::State<'_, Arc<Database>>,
-) -> Result<String, String> {
+fn delete_conversation(id: String, db: tauri::State<'_, Arc<Database>>) -> Result<String, String> {
     let conn = db.conn();
     conn.execute("DELETE FROM conversations WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
@@ -969,10 +967,7 @@ async fn update_memory(
 
 /// Delete (dismiss) a memory. Hides it from views but keeps the row.
 #[tauri::command]
-fn dismiss_memory(
-    id: String,
-    db: tauri::State<'_, Arc<Database>>,
-) -> Result<String, String> {
+fn dismiss_memory(id: String, db: tauri::State<'_, Arc<Database>>) -> Result<String, String> {
     let conn = db.conn();
     conn.execute(
         "UPDATE memories SET is_dismissed = 1, updated_at = datetime('now') WHERE id = ?1",
@@ -989,10 +984,7 @@ fn dismiss_memory(
 
 /// Permanently delete a memory.
 #[tauri::command]
-fn delete_memory(
-    id: String,
-    db: tauri::State<'_, Arc<Database>>,
-) -> Result<String, String> {
+fn delete_memory(id: String, db: tauri::State<'_, Arc<Database>>) -> Result<String, String> {
     let conn = db.conn();
     conn.execute("DELETE FROM memories WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
@@ -1004,10 +996,7 @@ fn delete_memory(
 }
 
 #[tauri::command]
-fn delete_action_item(
-    id: String,
-    db: tauri::State<'_, Arc<Database>>,
-) -> Result<String, String> {
+fn delete_action_item(id: String, db: tauri::State<'_, Arc<Database>>) -> Result<String, String> {
     let conn = db.conn();
     conn.execute("DELETE FROM action_items WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
@@ -1046,9 +1035,7 @@ fn has_whisper_model() -> bool {
 
 /// Check if Ollama is reachable
 #[tauri::command]
-async fn check_llm_status(
-    llm: tauri::State<'_, Arc<LlmClient>>,
-) -> Result<bool, String> {
+async fn check_llm_status(llm: tauri::State<'_, Arc<LlmClient>>) -> Result<bool, String> {
     llm.health_check().await
 }
 
@@ -1119,7 +1106,8 @@ async fn process_conversation_cmd(
         return Err("No transcript segments found for this conversation".to_string());
     }
 
-    llm::processor::process_conversation(&llm, &db.inner().clone(), &conversation_id, &transcript).await?;
+    llm::processor::process_conversation(&llm, &db.inner().clone(), &conversation_id, &transcript)
+        .await?;
 
     Ok(format!("Processed conversation {}", conversation_id))
 }
@@ -1164,11 +1152,7 @@ fn hide_floating_bar(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn floating_bar_resize(
-    app: tauri::AppHandle,
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
+fn floating_bar_resize(app: tauri::AppHandle, width: u32, height: u32) -> Result<(), String> {
     let window = app
         .get_webview_window("floating")
         .ok_or("Floating window not found")?;
@@ -1241,6 +1225,7 @@ pub fn run() {
     let embedder = Arc::new(Embedder::new());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1252,8 +1237,10 @@ pub fn run() {
 
             // Build a tray context menu — most Linux desktops (incl. KDE)
             // route both clicks through the menu rather than firing raw events.
-            let toggle_bar = MenuItem::with_id(app, "toggle_bar", "Toggle Floating Bar", true, None::<&str>)?;
-            let open_main = MenuItem::with_id(app, "open_main", "Open Main Window", true, None::<&str>)?;
+            let toggle_bar =
+                MenuItem::with_id(app, "toggle_bar", "Toggle Floating Bar", true, None::<&str>)?;
+            let open_main =
+                MenuItem::with_id(app, "open_main", "Open Main Window", true, None::<&str>)?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Omniscient", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&toggle_bar, &open_main, &separator, &quit])?;
@@ -1263,29 +1250,27 @@ pub fn run() {
                 tray.set_show_menu_on_left_click(false).ok();
 
                 // Menu item click handler
-                tray.on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "toggle_bar" => {
-                            if let Some(window) = app.get_webview_window("floating") {
-                                let visible = window.is_visible().unwrap_or(false);
-                                if visible {
-                                    let _ = window.hide();
-                                } else {
-                                    let _ = window.show();
-                                }
-                            }
-                        }
-                        "open_main" => {
-                            if let Some(window) = app.get_webview_window("main") {
+                tray.on_menu_event(|app, event| match event.id.as_ref() {
+                    "toggle_bar" => {
+                        if let Some(window) = app.get_webview_window("floating") {
+                            let visible = window.is_visible().unwrap_or(false);
+                            if visible {
+                                let _ = window.hide();
+                            } else {
                                 let _ = window.show();
-                                let _ = window.set_focus();
                             }
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "open_main" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 });
 
                 // Direct click handler — works on platforms that fire it (mainly macOS/Windows)

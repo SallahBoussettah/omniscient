@@ -2,8 +2,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
 use std::sync::{Arc, Mutex};
 
-use super::AudioState;
 use super::vad::Vad;
+use super::AudioState;
 
 /// Target sample rate for VAD and transcription
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -93,13 +93,7 @@ pub fn start_capture(
                     let vad = vad.clone();
                     let speech_buffer = speech_buffer.clone();
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        process_audio(
-                            &state_clone,
-                            &resample_state,
-                            &vad,
-                            &speech_buffer,
-                            data,
-                        );
+                        process_audio(&state_clone, &resample_state, &vad, &speech_buffer, data);
                     }
                 },
                 err_fn,
@@ -193,7 +187,11 @@ fn process_audio(
                     // Only keep segments longer than 0.5s
                     let segment = std::mem::take(&mut buf_guard.samples);
                     let duration = segment.len() as f32 / TARGET_SAMPLE_RATE as f32;
-                    log::info!("Speech segment captured: {:.1}s ({} samples)", duration, segment.len());
+                    log::info!(
+                        "Speech segment captured: {:.1}s ({} samples)",
+                        duration,
+                        segment.len()
+                    );
                     buf_guard.completed_segments.push(segment);
                 } else {
                     buf_guard.samples.clear();

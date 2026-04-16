@@ -310,19 +310,22 @@ async fn update_task(args: &Value, db: &Arc<Database>) -> Result<String, String>
         conn.execute(
             "UPDATE action_items SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![d, id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
     if let Some(p) = new_priority {
         conn.execute(
             "UPDATE action_items SET priority = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![p, id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
     if let Some(d) = new_due_at {
         conn.execute(
             "UPDATE action_items SET due_at = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![d, id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     Ok(format!("Updated task \"{}\"", original))
@@ -413,10 +416,7 @@ async fn update_memory_tool(
     ))
 }
 
-async fn delete_memory_tool(
-    args: &Value,
-    db: &Arc<Database>,
-) -> Result<String, String> {
+async fn delete_memory_tool(args: &Value, db: &Arc<Database>) -> Result<String, String> {
     let search = args
         .get("search")
         .and_then(Value::as_str)
@@ -487,7 +487,9 @@ async fn list_memories_tool(args: &Value, db: &Arc<Database>) -> Result<String, 
     };
 
     if rows.is_empty() {
-        let suffix = search.map(|s| format!(" matching '{}'", s)).unwrap_or_default();
+        let suffix = search
+            .map(|s| format!(" matching '{}'", s))
+            .unwrap_or_default();
         return Ok(format!("No memories{}.", suffix));
     }
 
@@ -579,9 +581,7 @@ fn find_memory_by_words(search: &str, db: &Arc<Database>) -> Option<(String, Str
         return None;
     }
 
-    let mut sql = String::from(
-        "SELECT id, content FROM memories WHERE is_dismissed = 0",
-    );
+    let mut sql = String::from("SELECT id, content FROM memories WHERE is_dismissed = 0");
     let mut params: Vec<String> = Vec::new();
     for w in &words {
         sql.push_str(" AND LOWER(content) LIKE ?");

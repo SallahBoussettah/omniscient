@@ -33,3 +33,4 @@ ringbuf = "0.4"
 voice_activity_detector = "0.2"
 whisper-rs = { version = "0.16", features = ["hipblas"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+tauri-plugin-notification = "2"

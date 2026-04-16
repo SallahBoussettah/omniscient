@@ -120,7 +120,9 @@ pub async fn process_conversation(
     // Failures here are non-fatal — chat just won't have context for these items.
     if let (Some(title), Some(overview)) = (conv_title_for_embed, conv_overview_for_embed) {
         let combined = format!("{}\n{}", title, overview);
-        if let Err(e) = rag::store_embedding(&embedder, db, "conversation", conversation_id, &combined).await {
+        if let Err(e) =
+            rag::store_embedding(&embedder, db, "conversation", conversation_id, &combined).await
+        {
             log::warn!("Failed to embed conversation overview: {}", e);
         }
     }
@@ -138,13 +140,15 @@ async fn extract_structure(
     client: &LlmClient,
     transcript: &str,
 ) -> Result<StructuredConversation, String> {
-    let response = client
-        .chat(prompts::STRUCTURE_PROMPT, transcript)
-        .await?;
+    let response = client.chat(prompts::STRUCTURE_PROMPT, transcript).await?;
 
     let cleaned = clean_json(&response);
-    serde_json::from_str::<StructuredConversation>(&cleaned)
-        .map_err(|e| format!("Failed to parse structure JSON: {} — response: {}", e, response))
+    serde_json::from_str::<StructuredConversation>(&cleaned).map_err(|e| {
+        format!(
+            "Failed to parse structure JSON: {} — response: {}",
+            e, response
+        )
+    })
 }
 
 async fn extract_action_items(
@@ -156,21 +160,24 @@ async fn extract_action_items(
         .await?;
 
     let cleaned = clean_json(&response);
-    serde_json::from_str::<Vec<ActionItem>>(&cleaned)
-        .map_err(|e| format!("Failed to parse action items JSON: {} — response: {}", e, response))
+    serde_json::from_str::<Vec<ActionItem>>(&cleaned).map_err(|e| {
+        format!(
+            "Failed to parse action items JSON: {} — response: {}",
+            e, response
+        )
+    })
 }
 
-async fn extract_memories(
-    client: &LlmClient,
-    transcript: &str,
-) -> Result<Vec<Memory>, String> {
-    let response = client
-        .chat(prompts::MEMORIES_PROMPT, transcript)
-        .await?;
+async fn extract_memories(client: &LlmClient, transcript: &str) -> Result<Vec<Memory>, String> {
+    let response = client.chat(prompts::MEMORIES_PROMPT, transcript).await?;
 
     let cleaned = clean_json(&response);
-    serde_json::from_str::<Vec<Memory>>(&cleaned)
-        .map_err(|e| format!("Failed to parse memories JSON: {} — response: {}", e, response))
+    serde_json::from_str::<Vec<Memory>>(&cleaned).map_err(|e| {
+        format!(
+            "Failed to parse memories JSON: {} — response: {}",
+            e, response
+        )
+    })
 }
 
 /// Strip markdown code fences from LLM response

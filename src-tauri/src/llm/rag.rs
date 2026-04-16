@@ -38,7 +38,15 @@ pub async fn store_embedding(
          ON CONFLICT(entity_type, entity_id) DO UPDATE SET
            text = excluded.text, vector = excluded.vector, dim = excluded.dim,
            model = excluded.model, created_at = datetime('now')",
-        rusqlite::params![id, entity_type, entity_id, text, blob, dim, embedder.model_name()],
+        rusqlite::params![
+            id,
+            entity_type,
+            entity_id,
+            text,
+            blob,
+            dim,
+            embedder.model_name()
+        ],
     )
     .map_err(|e| format!("Failed to store embedding: {}", e))?;
 
@@ -58,9 +66,7 @@ pub async fn search(
     let rows: Vec<(String, String, String, Vec<u8>, String)> = {
         let conn = db.conn();
         let mut stmt = conn
-            .prepare(
-                "SELECT entity_type, entity_id, text, vector, created_at FROM embeddings",
-            )
+            .prepare("SELECT entity_type, entity_id, text, vector, created_at FROM embeddings")
             .map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map([], |row| {
@@ -91,7 +97,11 @@ pub async fn search(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(top_k);
     Ok(scored)
 }
@@ -188,7 +198,9 @@ pub async fn chat_with_context(
     history: &[ChatMessage],
     user_message: &str,
 ) -> Result<(String, Vec<SearchHit>), String> {
-    let hits = search(embedder, db, user_message, 6).await.unwrap_or_default();
+    let hits = search(embedder, db, user_message, 6)
+        .await
+        .unwrap_or_default();
     let context = format_context(&hits);
 
     let mut messages: Vec<ChatMessage> = Vec::new();
@@ -222,11 +234,7 @@ pub async fn chat_with_context(
             return Ok((response.content, hits));
         }
 
-        log::info!(
-            "Tool-call loop iter {}: {} call(s)",
-            iteration,
-            calls.len()
-        );
+        log::info!("Tool-call loop iter {}: {} call(s)", iteration, calls.len());
 
         // Push the assistant message containing the tool_calls
         messages.push(response);
@@ -255,7 +263,8 @@ pub async fn chat_with_context(
 
     // If we exhausted iterations, return whatever the last text was (or a fallback)
     Ok((
-        "I tried multiple actions but didn't reach a final answer. Please rephrase or try again.".to_string(),
+        "I tried multiple actions but didn't reach a final answer. Please rephrase or try again."
+            .to_string(),
         hits,
     ))
 }

@@ -108,8 +108,7 @@ pub async fn ensure_model() -> Result<PathBuf, String> {
     }
 
     let dir = models_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create models dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create models dir: {}", e))?;
 
     let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
     log::info!("Downloading whisper model from {}...", url);
@@ -127,9 +126,11 @@ pub async fn ensure_model() -> Result<PathBuf, String> {
         .await
         .map_err(|e| format!("Failed to read model bytes: {}", e))?;
 
-    std::fs::write(&path, &bytes)
-        .map_err(|e| format!("Failed to write model file: {}", e))?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write model file: {}", e))?;
 
-    log::info!("Whisper model downloaded ({} MB)", bytes.len() / 1024 / 1024);
+    log::info!(
+        "Whisper model downloaded ({} MB)",
+        bytes.len() / 1024 / 1024
+    );
     Ok(path)
 }

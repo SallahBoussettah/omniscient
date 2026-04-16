@@ -17,7 +17,11 @@ impl Vad {
             .build()
             .map_err(|e| format!("Failed to initialize VAD: {}", e))?;
 
-        log::info!("Silero VAD initialized ({}Hz, chunk={})", SAMPLE_RATE, CHUNK_SIZE);
+        log::info!(
+            "Silero VAD initialized ({}Hz, chunk={})",
+            SAMPLE_RATE,
+            CHUNK_SIZE
+        );
         Ok(Self {
             detector,
             threshold: 0.5,
