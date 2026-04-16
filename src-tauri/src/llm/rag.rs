@@ -1,5 +1,6 @@
-use super::client::LlmClient;
+use super::client::{ChatMessage, LlmClient};
 use super::embed::{blob_to_vec, cosine, vec_to_blob, Embedder};
+use super::tools;
 use crate::db::Database;
 use std::sync::Arc;
 
@@ -122,34 +123,82 @@ pub fn format_context(hits: &[SearchHit]) -> String {
 
 const CHAT_SYSTEM_PROMPT: &str = r#"You are Omniscient, the user's personal AI assistant. You have access to their captured conversations, extracted memories, and notes. When answering, ground your response in the provided context. If the context doesn't contain the answer, say so honestly — don't fabricate details.
 
+You have tools to actually create, update, and complete tasks, and to save memories. WHEN THE USER ASKS YOU TO DO SOMETHING (add a task, mark something done, save a note, list tasks), USE THE TOOLS. Do not just say you'll do it — actually call the function. After the tool runs, briefly confirm what you did in natural language.
+
 Be concise and conversational. Refer to specific memories or conversations naturally (e.g., "From your conversation about X..."). Use first person when speaking as the assistant.
 
-If asked about the user's preferences, plans, or past discussions, lean on the context. If asked something unrelated to their captured data (general knowledge, math, code), answer normally."#;
+For general knowledge, math, code, or things unrelated to the user's captured data, answer normally without using tools."#;
 
-/// Run a RAG-augmented chat turn.
+/// Run a RAG-augmented chat turn with tool-calling support.
+/// Loops up to 5 times executing tool calls and feeding results back until
+/// the model returns a final text response.
 pub async fn chat_with_context(
     llm: &LlmClient,
     embedder: &Embedder,
     db: &Arc<Database>,
-    history: &[crate::llm::client::ChatMessage],
+    history: &[ChatMessage],
     user_message: &str,
 ) -> Result<(String, Vec<SearchHit>), String> {
-    // Retrieve relevant context
     let hits = search(embedder, db, user_message, 6).await.unwrap_or_default();
     let context = format_context(&hits);
 
-    // Build the message stack: system + context + history + new user message
-    let mut messages: Vec<crate::llm::client::ChatMessage> = Vec::new();
-    messages.push(crate::llm::client::ChatMessage {
-        role: "system".to_string(),
-        content: format!("{}\n\n---\n\n{}", CHAT_SYSTEM_PROMPT, context),
-    });
+    let mut messages: Vec<ChatMessage> = Vec::new();
+    messages.push(ChatMessage::system(format!(
+        "{}\n\n---\n\n{}",
+        CHAT_SYSTEM_PROMPT, context
+    )));
     messages.extend_from_slice(history);
-    messages.push(crate::llm::client::ChatMessage {
-        role: "user".to_string(),
-        content: user_message.to_string(),
-    });
+    messages.push(ChatMessage::user(user_message));
 
-    let answer = llm.chat_messages(&messages).await?;
-    Ok((answer, hits))
+    let tools = tools::tool_definitions();
+
+    // Tool-call loop — bounded to prevent infinite loops
+    for iteration in 0..5 {
+        let response = llm
+            .chat_messages_with_tools(&messages, Some(&tools))
+            .await?;
+
+        let calls = response.tool_calls.clone().unwrap_or_default();
+
+        if calls.is_empty() {
+            // Final answer
+            return Ok((response.content, hits));
+        }
+
+        log::info!(
+            "Tool-call loop iter {}: {} call(s)",
+            iteration,
+            calls.len()
+        );
+
+        // Push the assistant message containing the tool_calls
+        messages.push(response);
+
+        // Execute each tool and append results
+        for call in &calls {
+            let result = match tools::execute_tool(
+                &call.function.name,
+                &call.function.arguments,
+                db,
+                embedder,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => format!("Error: {}", e),
+            };
+            log::info!("  -> {}: {}", call.function.name, result);
+            messages.push(ChatMessage::tool_result(
+                &call.id,
+                &call.function.name,
+                result,
+            ));
+        }
+    }
+
+    // If we exhausted iterations, return whatever the last text was (or a fallback)
+    Ok((
+        "I tried multiple actions but didn't reach a final answer. Please rephrase or try again.".to_string(),
+        hits,
+    ))
 }

@@ -578,12 +578,12 @@ async fn chat_send(
             .map_err(|e| e.to_string())?;
         let iter = stmt
             .query_map([&session_id], |row| {
-                Ok(ChatMessage {
-                    role: match row.get::<_, String>(0)?.as_str() {
-                        "user" => "user".to_string(),
-                        _ => "assistant".to_string(),
-                    },
-                    content: row.get::<_, String>(1)?,
+                let sender = row.get::<_, String>(0)?;
+                let text = row.get::<_, String>(1)?;
+                Ok(if sender == "user" {
+                    ChatMessage::user(text)
+                } else {
+                    ChatMessage::assistant(text)
                 })
             })
             .map_err(|e| e.to_string())?;
