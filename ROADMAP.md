@@ -9,10 +9,11 @@ An always-on AI assistant for Linux that sees your screen, hears your conversati
 - [x] Initialize Tauri v2 + React + TypeScript + Tailwind project
 - [x] Design and implement SQLite schema (14 tables + 3 FTS5 indexes)
 - [x] Build Rust database service with CRUD
-- [x] Create React UI — "Ambient Intelligence" design from Stitch
-- [x] Icon-only sidebar, personalized greeting, stat circles, conversation rows with accent lines + sparklines, insight cards, floating mic FAB
+- [x] Create React UI — redesigned with labeled sidebar, responsive clamp() layout, plain CSS
+- [x] Conversations page: greeting, stats, conversation list with icons/tags, insight cards, listening indicator, mic FAB
 - [x] System tray icon
 - [x] Settings page (placeholder)
+- [x] All pages: consistent styling, empty states, Material Symbols icons
 
 ---
 
