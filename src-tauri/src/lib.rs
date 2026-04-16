@@ -186,6 +186,26 @@ fn is_recording(audio_state: tauri::State<'_, Arc<AudioState>>) -> bool {
     audio_state.is_recording()
 }
 
+#[derive(serde::Serialize)]
+struct RecordingStatus {
+    is_recording: bool,
+    audio_level: u32,
+    silence_ms: u64,
+    recording_ms: u64,
+}
+
+/// Combined recording status — used by the frontend to poll once instead of
+/// hitting three commands. Also drives auto-stop on prolonged silence.
+#[tauri::command]
+fn get_recording_status(audio_state: tauri::State<'_, Arc<AudioState>>) -> RecordingStatus {
+    RecordingStatus {
+        is_recording: audio_state.is_recording(),
+        audio_level: audio_state.get_level(),
+        silence_ms: audio_state.silence_ms(),
+        recording_ms: audio_state.recording_ms(),
+    }
+}
+
 /// Download the whisper model if needed, then initialize the transcriber.
 /// Async so the download doesn't block the Tauri IPC thread.
 #[tauri::command]
@@ -1236,6 +1256,7 @@ pub fn run() {
             cancel_recording,
             get_audio_level,
             is_recording,
+            get_recording_status,
             init_transcriber,
             transcribe_pending,
             has_whisper_model,

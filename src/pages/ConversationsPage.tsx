@@ -12,6 +12,7 @@ import {
   getActionItems,
   processConversation,
   checkLlmStatus,
+  getRecordingStatus,
 } from "../lib/tauri";
 import type {
   TranscriptSegment,
@@ -83,8 +84,14 @@ export function ConversationsPage({ onOpenConversation }: Props) {
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [tasks, setTasks] = useState<ActionItemData[]>([]);
   const [processing, setProcessing] = useState(false);
+  const [silenceMs, setSilenceMs] = useState(0);
 
   const transcribeRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const statusRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Auto-stop after this much continuous silence following actual speech
+  const AUTO_STOP_SILENCE_MS = 60_000;
+  // But don't auto-stop in the first N seconds (give user time to start talking)
+  const AUTO_STOP_MIN_RECORDING_MS = 10_000;
 
   const loadData = useCallback(async () => {
     try {
@@ -131,41 +138,50 @@ export function ConversationsPage({ onOpenConversation }: Props) {
       await cancelRecording();
       setRecording(false);
       setLiveTranscript([]);
+      setSilenceMs(0);
       await loadData();
     } catch (e) {
       console.error("Cancel failed:", e);
     }
   }
 
+  // Stop and process — used by both manual stop and auto-stop on silence
+  async function performStop() {
+    try {
+      const convId = await stopRecording();
+      setRecording(false);
+      setSilenceMs(0);
+
+      try {
+        const finalSegs = await transcribePending();
+        if (finalSegs.length) setLiveTranscript((prev) => [...prev, ...finalSegs]);
+      } catch {
+        /* ignore */
+      }
+
+      if (convId && llmReady) {
+        setProcessing(true);
+        try {
+          await processConversation(convId);
+          await loadData();
+          setLiveTranscript([]);
+        } catch (e) {
+          console.error("Failed to process conversation:", e);
+        }
+        setProcessing(false);
+      } else if (convId) {
+        await loadData();
+      }
+    } catch (err) {
+      console.error("Stop failed:", err);
+      setProcessing(false);
+    }
+  }
+
   async function toggleRecording() {
     try {
       if (recording) {
-        // Stop first — get the conv_id back
-        const convId = await stopRecording();
-        setRecording(false);
-
-        // Drain any remaining transcript
-        try {
-          const finalSegs = await transcribePending();
-          if (finalSegs.length) setLiveTranscript((prev) => [...prev, ...finalSegs]);
-        } catch {
-          /* ignore */
-        }
-
-        // Auto-process via LLM if available
-        if (convId && llmReady) {
-          setProcessing(true);
-          try {
-            await processConversation(convId);
-            await loadData();
-            setLiveTranscript([]);
-          } catch (e) {
-            console.error("Failed to process conversation:", e);
-          }
-          setProcessing(false);
-        } else if (convId) {
-          await loadData();
-        }
+        await performStop();
       } else {
         if (!modelReady) {
           setModelLoading(true);
@@ -176,12 +192,50 @@ export function ConversationsPage({ onOpenConversation }: Props) {
         await startRecording();
         setRecording(true);
         setLiveTranscript([]);
+        setSilenceMs(0);
       }
     } catch (err) {
       console.error("Recording toggle failed:", err);
       setModelLoading(false);
       setProcessing(false);
     }
+  }
+
+  // Status polling — drives the auto-stop on silence + a small countdown UI
+  useEffect(() => {
+    if (recording) {
+      statusRef.current = setInterval(async () => {
+        try {
+          const status = await getRecordingStatus();
+          setSilenceMs(status.silence_ms);
+          // Auto-stop: only after warmup AND only if silence_ms is meaningful
+          // (silence_ms is 0 when no speech detected at all — don't auto-stop
+          // a recording that captured nothing)
+          if (
+            status.recording_ms > AUTO_STOP_MIN_RECORDING_MS &&
+            status.silence_ms > AUTO_STOP_SILENCE_MS &&
+            status.silence_ms < status.recording_ms
+          ) {
+            log("auto-stop: silence threshold reached", status);
+            performStop();
+          }
+        } catch {
+          /* ignore */
+        }
+      }, 1000);
+    } else {
+      if (statusRef.current) clearInterval(statusRef.current);
+      setSilenceMs(0);
+    }
+    return () => {
+      if (statusRef.current) clearInterval(statusRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording, llmReady]);
+
+  function log(...args: unknown[]) {
+    // eslint-disable-next-line no-console
+    console.log("[Omniscient]", ...args);
   }
 
   // Group conversations by date bucket (newest first within each)
@@ -215,7 +269,12 @@ export function ConversationsPage({ onOpenConversation }: Props) {
           ) : recording ? (
             <span className="status-pill is-active">
               <span className="status-dot is-active" />
-              Listening
+              {silenceMs > 30_000
+                ? `Auto-stop in ${Math.max(
+                    0,
+                    Math.ceil((AUTO_STOP_SILENCE_MS - silenceMs) / 1000)
+                  )}s`
+                : "Listening"}
             </span>
           ) : modelReady ? (
             <span className="status-pill">

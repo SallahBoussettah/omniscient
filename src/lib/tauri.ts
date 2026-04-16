@@ -54,6 +54,17 @@ export async function isRecording(): Promise<boolean> {
   return invoke("is_recording");
 }
 
+export interface RecordingStatus {
+  is_recording: boolean;
+  audio_level: number;
+  silence_ms: number;
+  recording_ms: number;
+}
+
+export async function getRecordingStatus(): Promise<RecordingStatus> {
+  return invoke("get_recording_status");
+}
+
 export async function getDbStats(): Promise<{
   conversations: number;
   memories: number;

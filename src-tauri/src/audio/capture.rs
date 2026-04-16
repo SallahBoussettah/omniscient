@@ -176,6 +176,9 @@ fn process_audio(
         let is_speech = vad_guard.is_speech(chunk);
 
         if is_speech {
+            // Note: we mark speech here on every speech chunk so silence
+            // detection is responsive. This is what auto-stop polls.
+            state.mark_speech();
             buf_guard.in_speech = true;
             buf_guard.silent_chunks = 0;
             buf_guard.samples.extend_from_slice(chunk);
