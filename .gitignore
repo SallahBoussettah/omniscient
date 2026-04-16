@@ -36,6 +36,8 @@ src-tauri/Cargo.lock.bak
 
 # Internal docs not for the public repo
 OMI-DESIGN.md
+OMI-FLOATING-BAR-MECHANICS.md
+OMI-*.md
 .impeccable.md
 
 # User data (just in case anyone runs the app from this dir)
