@@ -68,7 +68,11 @@ const SECTION_ORDER: ("Today" | "Yesterday" | "This Week" | "Earlier")[] = [
   "Earlier",
 ];
 
-export function ConversationsPage() {
+interface Props {
+  onOpenConversation: (id: string) => void;
+}
+
+export function ConversationsPage({ onOpenConversation }: Props) {
   const [recording, setRecording] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
@@ -289,7 +293,11 @@ export function ConversationsPage() {
               <div className="date-section-label">{bucket}</div>
               <div>
                 {items.map((c) => (
-                  <div key={c.id} className="conv-row">
+                  <div
+                    key={c.id}
+                    className="conv-row"
+                    onClick={() => onOpenConversation(c.id)}
+                  >
                     <div className="conv-icon">
                       <span className="material-symbols-outlined">
                         {ICON_BY_CATEGORY[c.category || "other"] || "chat_bubble"}

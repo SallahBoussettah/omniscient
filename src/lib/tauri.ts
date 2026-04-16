@@ -81,6 +81,33 @@ export async function processConversation(conversationId: string): Promise<strin
   return invoke("process_conversation_cmd", { conversationId });
 }
 
+export async function reprocessConversation(conversationId: string): Promise<string> {
+  return invoke("reprocess_conversation", { conversationId });
+}
+
+export async function deleteConversation(id: string): Promise<string> {
+  return invoke("delete_conversation", { id });
+}
+
+export interface TranscriptSegmentRow {
+  id: string;
+  text: string;
+  speaker: string | null;
+  start_time: number;
+  end_time: number;
+}
+
+export interface ConversationDetail {
+  conversation: Conversation;
+  segments: TranscriptSegmentRow[];
+  memories: MemoryItem[];
+  tasks: ActionItemData[];
+}
+
+export async function getConversationDetail(id: string): Promise<ConversationDetail> {
+  return invoke("get_conversation_detail", { id });
+}
+
 export interface Conversation {
   id: string;
   title: string | null;

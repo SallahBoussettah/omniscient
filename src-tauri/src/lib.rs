@@ -297,6 +297,161 @@ fn get_action_items(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::V
     Ok(serde_json::json!(rows))
 }
 
+/// Get full details for a single conversation: metadata, transcript segments,
+/// extracted memories, and action items. Used by the detail view.
+#[tauri::command]
+fn get_conversation_detail(
+    id: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.conn();
+
+    let conv: serde_json::Value = conn
+        .query_row(
+            "SELECT id, title, overview, emoji, category, status, started_at, finished_at
+             FROM conversations WHERE id = ?1",
+            [&id],
+            |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, Option<String>>(1)?,
+                    "overview": row.get::<_, Option<String>>(2)?,
+                    "emoji": row.get::<_, Option<String>>(3)?,
+                    "category": row.get::<_, Option<String>>(4)?,
+                    "status": row.get::<_, String>(5)?,
+                    "started_at": row.get::<_, String>(6)?,
+                    "finished_at": row.get::<_, Option<String>>(7)?,
+                }))
+            },
+        )
+        .map_err(|e| format!("Conversation not found: {}", e))?;
+
+    let mut seg_stmt = conn
+        .prepare(
+            "SELECT id, text, speaker, start_time, end_time
+             FROM transcript_segments WHERE conversation_id = ?1 ORDER BY start_time",
+        )
+        .map_err(|e| e.to_string())?;
+    let segments: Vec<serde_json::Value> = seg_stmt
+        .query_map([&id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "text": row.get::<_, String>(1)?,
+                "speaker": row.get::<_, Option<String>>(2)?,
+                "start_time": row.get::<_, f64>(3)?,
+                "end_time": row.get::<_, f64>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut mem_stmt = conn
+        .prepare(
+            "SELECT id, content, category, created_at FROM memories
+             WHERE conversation_id = ?1 ORDER BY created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    let memories: Vec<serde_json::Value> = mem_stmt
+        .query_map([&id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "content": row.get::<_, String>(1)?,
+                "category": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut task_stmt = conn
+        .prepare(
+            "SELECT id, description, completed, priority, created_at FROM action_items
+             WHERE conversation_id = ?1 ORDER BY completed, created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    let tasks: Vec<serde_json::Value> = task_stmt
+        .query_map([&id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "description": row.get::<_, String>(1)?,
+                "completed": row.get::<_, bool>(2)?,
+                "priority": row.get::<_, String>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(serde_json::json!({
+        "conversation": conv,
+        "segments": segments,
+        "memories": memories,
+        "tasks": tasks,
+    }))
+}
+
+/// Reprocess a conversation through the LLM (re-runs structure/tasks/memories).
+/// Useful if the LLM was offline when first stopped, or to regenerate with a different model.
+#[tauri::command]
+async fn reprocess_conversation(
+    conversation_id: String,
+    llm: tauri::State<'_, Arc<LlmClient>>,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    let transcript = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT text FROM transcript_segments
+                 WHERE conversation_id = ?1 ORDER BY start_time",
+            )
+            .map_err(|e| e.to_string())?;
+        let texts: Vec<String> = stmt
+            .query_map([&conversation_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        texts.join(" ")
+    };
+
+    if transcript.trim().is_empty() {
+        return Err("No transcript segments found".to_string());
+    }
+
+    // Clear previously extracted items for clean reprocessing
+    {
+        let conn = db.conn();
+        let _ = conn.execute(
+            "DELETE FROM memories WHERE conversation_id = ?1",
+            [&conversation_id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM action_items WHERE conversation_id = ?1",
+            [&conversation_id],
+        );
+    }
+
+    llm::processor::process_conversation(&llm, &db.inner().clone(), &conversation_id, &transcript)
+        .await?;
+    Ok(format!("Reprocessed {}", conversation_id))
+}
+
+#[tauri::command]
+fn delete_conversation(
+    id: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    let conn = db.conn();
+    conn.execute("DELETE FROM conversations WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    // ON DELETE CASCADE handles transcript_segments
+    // memories/action_items use ON DELETE SET NULL
+    Ok("Deleted".to_string())
+}
+
 #[tauri::command]
 fn toggle_action_item(
     id: String,
@@ -463,6 +618,9 @@ pub fn run() {
             list_ollama_models,
             process_conversation_cmd,
             get_conversations,
+            get_conversation_detail,
+            reprocess_conversation,
+            delete_conversation,
             get_memories,
             get_action_items,
             toggle_action_item,
