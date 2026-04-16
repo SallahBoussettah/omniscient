@@ -31,7 +31,7 @@ export function SettingsPage() {
       <section className="date-section">
         <div className="date-section-label">Intelligence</div>
         <Row label="Provider" value="Ollama" hint="Local, runs on your GPU" />
-        <Row label="Model" value="qwen2.5:14b-instruct" hint="8.5GB · best for your RX 9070 XT" />
+        <Row label="Model" value="qwen2.5:14b" hint="9.0GB · best for your RX 9070 XT" />
         <Row label="Endpoint" value="localhost:11434" />
       </section>
 

@@ -55,9 +55,27 @@ fn start_recording(
     stream_holder: tauri::State<'_, StreamHolder>,
     vad_state: tauri::State<'_, Arc<Mutex<Vad>>>,
     speech_buf: tauri::State<'_, Arc<Mutex<SpeechBuffer>>>,
+    db: tauri::State<'_, Arc<Database>>,
+    current_conv: tauri::State<'_, Arc<Mutex<Option<String>>>>,
 ) -> Result<String, String> {
     if audio_state.is_recording() {
         return Err("Already recording".to_string());
+    }
+
+    // Create a new conversation row for this session
+    let conv_id = uuid::Uuid::new_v4().to_string();
+    {
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO conversations (id, started_at, source, status) VALUES (?1, datetime('now'), 'mic', 'in_progress')",
+            rusqlite::params![conv_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let mut current = current_conv.lock().map_err(|e| e.to_string())?;
+        *current = Some(conv_id.clone());
     }
 
     let stream = audio::capture::start_capture(
@@ -69,20 +87,38 @@ fn start_recording(
     let mut holder = stream_holder.0.lock().map_err(|e| e.to_string())?;
     *holder = Some(stream);
 
-    Ok("Recording started".to_string())
+    log::info!("Started recording conversation {}", conv_id);
+    Ok(conv_id)
 }
 
 #[tauri::command]
 fn stop_recording(
     audio_state: tauri::State<'_, Arc<AudioState>>,
     stream_holder: tauri::State<'_, StreamHolder>,
-) -> Result<String, String> {
+    db: tauri::State<'_, Arc<Database>>,
+    current_conv: tauri::State<'_, Arc<Mutex<Option<String>>>>,
+) -> Result<Option<String>, String> {
     let mut holder = stream_holder.0.lock().map_err(|e| e.to_string())?;
     *holder = None;
     audio_state.set_recording(false);
     audio_state.set_level(0.0);
-    log::info!("Audio capture stopped");
-    Ok("Recording stopped".to_string())
+
+    // Mark conversation as finished
+    let conv_id = {
+        let mut current = current_conv.lock().map_err(|e| e.to_string())?;
+        current.take()
+    };
+
+    if let Some(ref id) = conv_id {
+        let conn = db.conn();
+        let _ = conn.execute(
+            "UPDATE conversations SET finished_at = datetime('now'), status = 'processing' WHERE id = ?1",
+            rusqlite::params![id],
+        );
+        log::info!("Stopped recording conversation {}", id);
+    }
+
+    Ok(conv_id)
 }
 
 #[tauri::command]
@@ -118,6 +154,7 @@ fn transcribe_pending(
     speech_buf: tauri::State<'_, Arc<Mutex<SpeechBuffer>>>,
     transcriber: tauri::State<'_, TranscriberHolder>,
     db: tauri::State<'_, Arc<Database>>,
+    current_conv: tauri::State<'_, Arc<Mutex<Option<String>>>>,
 ) -> Result<Vec<TranscriptSegment>, String> {
     let segments = {
         let mut buf = speech_buf.lock().map_err(|e| e.to_string())?;
@@ -133,6 +170,12 @@ fn transcribe_pending(
         .as_ref()
         .ok_or("Transcriber not initialized. Call init_transcriber first.")?;
 
+    // Get the current conversation_id (or fall back to "live")
+    let conv_id = {
+        let current = current_conv.lock().map_err(|e| e.to_string())?;
+        current.clone().unwrap_or_else(|| "live".to_string())
+    };
+
     let mut all_results = Vec::new();
 
     for (i, audio) in segments.iter().enumerate() {
@@ -144,14 +187,14 @@ fn transcribe_pending(
                 for seg in &results {
                     log::info!("  [{}-{}ms] {}", seg.start_ms, seg.end_ms, seg.text);
 
-                    // Store in database
                     let conn = db.conn();
                     let id = uuid::Uuid::new_v4().to_string();
                     let _ = conn.execute(
                         "INSERT INTO transcript_segments (id, conversation_id, text, start_time, end_time)
-                         VALUES (?1, 'live', ?2, ?3, ?4)",
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
                         rusqlite::params![
                             id,
+                            conv_id,
                             seg.text,
                             seg.start_ms as f64 / 1000.0,
                             seg.end_ms as f64 / 1000.0,
@@ -326,8 +369,11 @@ pub fn run() {
     ));
     let speech_buffer = Arc::new(Mutex::new(SpeechBuffer::new()));
 
-    // Default to Ollama with qwen2.5:14b-instruct (best for our 16GB GPU)
-    let llm_client = Arc::new(LlmClient::ollama("qwen2.5:14b-instruct"));
+    // Default to Ollama with qwen2.5:14b (instruct version, best for our 16GB GPU)
+    let llm_client = Arc::new(LlmClient::ollama("qwen2.5:14b"));
+
+    // Tracks the currently active conversation_id while recording
+    let current_conversation: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     tauri::Builder::default()
         .setup(|app| {
@@ -347,6 +393,7 @@ pub fn run() {
         .manage(vad)
         .manage(speech_buffer)
         .manage(llm_client)
+        .manage(current_conversation)
         .invoke_handler(tauri::generate_handler![
             get_db_stats,
             list_audio_devices,

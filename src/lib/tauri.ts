@@ -4,11 +4,13 @@ export async function listAudioDevices(): Promise<string[]> {
   return invoke("list_audio_devices");
 }
 
+/** Returns the new conversation_id */
 export async function startRecording(): Promise<string> {
   return invoke("start_recording");
 }
 
-export async function stopRecording(): Promise<string> {
+/** Returns the conversation_id that was just stopped (or null if none active) */
+export async function stopRecording(): Promise<string | null> {
   return invoke("stop_recording");
 }
 
