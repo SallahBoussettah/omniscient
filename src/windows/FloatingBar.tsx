@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import {
   startRecording,
   stopRecording,
@@ -15,16 +17,30 @@ import {
   listChatSessions,
   getChatMessages,
 } from "../lib/tauri";
-import type { TranscriptSegment, ChatSession } from "../lib/tauri";
+import type {
+  TranscriptSegment,
+  ChatSession,
+  SearchHit,
+} from "../lib/tauri";
 
 const COMPACT_W = 60;
 const COMPACT_H = 14;
-const EXPANDED_W = 480;
-const EXPANDED_H = 140;
-const EXPANDED_WITH_HISTORY_H = 240;
+const EXPANDED_W = 520;
+const EXPANDED_H = 130;
+const EXPANDED_WITH_HISTORY_H = 260;
+const ANSWER_H = 320;
 const RECORDING_H = 200;
 
+const POSITION_KEY = "omniscient.floatingBar.position";
+
 type Mode = "compact" | "expanded" | "recording" | "answer";
+
+marked.setOptions({ breaks: true, gfm: true });
+
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false }) as string;
+  return DOMPurify.sanitize(html);
+}
 
 export function FloatingBar() {
   const [mode, setMode] = useState<Mode>("compact");
@@ -32,15 +48,33 @@ export function FloatingBar() {
   const [recording, setRecording] = useState(false);
   const [liveText, setLiveText] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
+  const [sources, setSources] = useState<SearchHit[]>([]);
   const [thinking, setThinking] = useState(false);
-  // Persist the chat session across messages so the assistant remembers
-  // what we've been discussing in this floating-bar session.
+  const [copied, setCopied] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [recentSessions, setRecentSessions] = useState<ChatSession[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const transcribePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dragSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Resize the OS window when mode changes
+  // Restore saved position on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(POSITION_KEY);
+    if (saved) {
+      try {
+        const { x, y } = JSON.parse(saved);
+        if (typeof x === "number" && typeof y === "number") {
+          getCurrentWindow()
+            .setPosition(new PhysicalPosition(x, y))
+            .catch(() => {});
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
+
+  // Resize OS window when mode changes
   useEffect(() => {
     const resize = (w: number, h: number) =>
       floatingBarResize(w, h).catch(() => {});
@@ -56,7 +90,7 @@ export function FloatingBar() {
         resize(EXPANDED_W, RECORDING_H);
         break;
       case "answer":
-        resize(EXPANDED_W, RECORDING_H);
+        resize(EXPANDED_W, ANSWER_H);
         break;
       default:
         resize(EXPANDED_W, showHistory ? EXPANDED_WITH_HISTORY_H : EXPANDED_H);
@@ -71,7 +105,7 @@ export function FloatingBar() {
       .catch(() => {});
   }, []);
 
-  // Reload recent sessions when bar transitions from compact (re-opened)
+  // Reload recent sessions when we expand to a fresh state
   useEffect(() => {
     if (mode === "expanded" && !sessionId) {
       listChatSessions()
@@ -80,7 +114,7 @@ export function FloatingBar() {
     }
   }, [mode, sessionId]);
 
-  // Poll for transcript while recording (live preview only — full processing skipped on cancel)
+  // Poll for transcript while recording
   useEffect(() => {
     if (recording) {
       transcribePollRef.current = setInterval(async () => {
@@ -104,23 +138,41 @@ export function FloatingBar() {
     };
   }, [recording]);
 
-  // Focus input when entering expanded mode
+  // Focus input when entering expanded/answer mode
   useEffect(() => {
-    if (mode === "expanded" && inputRef.current) {
-      // Slight delay so window resize completes first
-      setTimeout(() => inputRef.current?.focus(), 50);
+    if ((mode === "expanded" || mode === "answer") && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 80);
     }
   }, [mode]);
+
+  // Reset copied indicator after 1.5s
+  useEffect(() => {
+    if (copied) {
+      const t = setTimeout(() => setCopied(false), 1500);
+      return () => clearTimeout(t);
+    }
+  }, [copied]);
 
   function handleHover() {
     if (mode === "compact") setMode("expanded");
   }
 
-  // Explicit Tauri startDragging — `data-tauri-drag-region` is unreliable on
-  // Wayland; calling it programmatically from a mousedown event works.
-  // KEY: Wayland (KWin) requires the window be FOCUSED before it honors
-  // xdg_toplevel.move(). Our window starts with focus:false so we must
-  // explicitly grab focus first or the drag silently does nothing.
+  // Persist position after dragging settles
+  function schedulePositionSave() {
+    if (dragSaveTimerRef.current) clearTimeout(dragSaveTimerRef.current);
+    dragSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const pos = await getCurrentWindow().outerPosition();
+        localStorage.setItem(
+          POSITION_KEY,
+          JSON.stringify({ x: pos.x, y: pos.y })
+        );
+      } catch {
+        /* ignore */
+      }
+    }, 600);
+  }
+
   async function startDrag(e: React.MouseEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -128,39 +180,53 @@ export function FloatingBar() {
     try {
       await win.setFocus();
       await win.startDragging();
+      schedulePositionSave();
     } catch (err) {
       console.error("Drag failed:", err);
     }
   }
 
   function handleLeave() {
-    // Only collapse if not recording, not showing answer, and input is empty
-    if (mode === "expanded" && !input && !recording && !answer) {
+    // Only collapse if idle: not recording, no input, no answer, no thinking
+    if (
+      mode === "expanded" &&
+      !input &&
+      !recording &&
+      !answer &&
+      !thinking &&
+      !sessionId
+    ) {
       setMode("compact");
     }
   }
 
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || thinking) return;
+  async function sendText(text: string) {
     setThinking(true);
-    setAnswer(null);
     try {
       const result = await chatSend(text, sessionId);
       setSessionId(result.session_id);
       setAnswer(result.answer);
+      setSources(result.sources || []);
       setMode("answer");
       setInput("");
     } catch (e) {
       setAnswer(`Error: ${e}`);
+      setSources([]);
       setMode("answer");
     }
     setThinking(false);
   }
 
+  async function handleSend() {
+    const text = input.trim();
+    if (!text || thinking) return;
+    setAnswer(null);
+    setSources([]);
+    await sendText(text);
+  }
+
   async function handleStartTalking() {
     try {
-      // Ensure whisper is ready (does nothing if already loaded)
       const ready = await hasWhisperModel();
       if (!ready) await initTranscriber();
       await startRecording();
@@ -176,23 +242,15 @@ export function FloatingBar() {
     try {
       const convId = await stopRecording();
       setRecording(false);
-      // Use the captured live text as the input for chat
       if (liveText.trim()) {
         const text = liveText.trim();
         setLiveText("");
-        // Auto-send to current session
-        setThinking(true);
         setAnswer(null);
-        const result = await chatSend(text, sessionId);
-        setSessionId(result.session_id);
-        setAnswer(result.answer);
-        setMode("answer");
-        setInput("");
-        setThinking(false);
+        setSources([]);
+        await sendText(text);
       } else {
         setMode("expanded");
       }
-      // Don't keep the partial conversation around
       void convId;
     } catch (e) {
       console.error("Stop failed:", e);
@@ -213,10 +271,10 @@ export function FloatingBar() {
   }
 
   function handleClose() {
-    // Reset and hide — also drop the chat session so next open is fresh
     setMode("compact");
     setInput("");
     setAnswer(null);
+    setSources([]);
     setLiveText("");
     setSessionId(null);
     if (recording) cancelRecording().catch(() => {});
@@ -227,26 +285,36 @@ export function FloatingBar() {
   function handleNewChat() {
     setSessionId(null);
     setAnswer(null);
+    setSources([]);
     setInput("");
     setMode("expanded");
     setTimeout(() => inputRef.current?.focus(), 50);
   }
 
   function handleOpenMain() {
-    // If a session is active, jump straight to it in the main chat view
     showMainWindowWithChat(sessionId).catch(() => {});
   }
 
   async function handleResumeSession(s: ChatSession) {
     try {
       const messages = await getChatMessages(s.id);
-      // Surface the last assistant message so the user can see context
       const lastAsst = [...messages].reverse().find((m) => m.sender === "assistant");
       setSessionId(s.id);
       setAnswer(lastAsst ? lastAsst.text : "Continuing where we left off.");
+      setSources([]);
       setMode("answer");
     } catch (e) {
       console.error("Resume failed:", e);
+    }
+  }
+
+  async function copyAnswer() {
+    if (!answer) return;
+    try {
+      await navigator.clipboard.writeText(answer);
+      setCopied(true);
+    } catch (e) {
+      console.error("Copy failed:", e);
     }
   }
 
@@ -257,6 +325,9 @@ export function FloatingBar() {
     } else if (e.key === "Escape") {
       e.preventDefault();
       handleClose();
+    } else if ((e.metaKey || e.ctrlKey) && e.key === "l") {
+      e.preventDefault();
+      handleNewChat();
     }
   }
 
@@ -276,10 +347,39 @@ export function FloatingBar() {
   // ---------- EXPANDED / RECORDING / ANSWER ----------
   return (
     <div className="fb-root fb-expanded" onMouseLeave={handleLeave}>
-      {/* drag handle */}
+      {/* Drag handle */}
       <div className="fb-drag" onMouseDown={startDrag} />
 
-      {/* Recent sessions — only when no active session and we have history */}
+      {/* Top-right chrome — always visible */}
+      <div className="fb-footer fb-footer-visible">
+        {sessionId && (
+          <span className="fb-session-badge">
+            <span className="fb-session-dot" />
+            chat
+          </span>
+        )}
+        {sessionId && (
+          <button
+            className="fb-icon-btn"
+            onClick={handleNewChat}
+            title="New chat (Ctrl+L)"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>add</span>
+          </button>
+        )}
+        <button
+          className="fb-icon-btn"
+          onClick={handleOpenMain}
+          title={sessionId ? "Open this chat in main window" : "Open main window"}
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>open_in_new</span>
+        </button>
+        <button className="fb-icon-btn" onClick={handleClose} title="Close (Esc)">
+          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>close</span>
+        </button>
+      </div>
+
+      {/* Recent sessions list */}
       {mode === "expanded" && !sessionId && recentSessions.length > 0 && (
         <div className="fb-recent">
           <div className="fb-recent-label">Resume</div>
@@ -290,144 +390,129 @@ export function FloatingBar() {
               onClick={() => handleResumeSession(s)}
               title={s.title || "Untitled chat"}
             >
-              <span
-                className="material-symbols-outlined"
-                style={{ fontSize: 12, opacity: 0.6 }}
-              >
+              <span className="material-symbols-outlined" style={{ fontSize: 12, opacity: 0.6 }}>
                 forum
               </span>
-              <span className="fb-recent-text">
-                {s.title || "Untitled"}
-              </span>
+              <span className="fb-recent-text">{s.title || "Untitled"}</span>
             </button>
           ))}
         </div>
       )}
 
-      {mode === "answer" && answer && (
-        <div className="fb-answer">{answer}</div>
-      )}
-
+      {/* Recording: live transcript */}
       {mode === "recording" && (
         <div className="fb-recording">
           <span className="fb-rec-dot" />
-          <span className="fb-rec-text">
-            {liveText || "Listening… speak now"}
-          </span>
+          <div className="fb-rec-text">
+            {liveText || (
+              <span style={{ color: "var(--text-3)", fontStyle: "italic" }}>
+                Listening… speak now
+              </span>
+            )}
+          </div>
         </div>
       )}
 
-      <div className="fb-input-row">
-        <button
-          className={`fb-btn ${recording ? "fb-btn-recording" : ""}`}
-          onClick={recording ? handleStopTalking : handleStartTalking}
-          title={recording ? "Stop & send" : "Push to talk"}
-          disabled={thinking}
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: 18 }}>
-            {recording ? "stop" : "mic"}
+      {/* Answer */}
+      {mode === "answer" && answer && (
+        <div className="fb-answer-wrap">
+          <div
+            className="fb-answer fb-markdown"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(answer) }}
+          />
+          <div className="fb-answer-actions">
+            {sources.length > 0 && (
+              <div className="fb-sources">
+                {sources.slice(0, 3).map((src, i) => (
+                  <span key={i} className="fb-source-pill" title={src.text}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 10 }}>
+                      {src.entity_type === "memory" ? "auto_awesome" : "forum"}
+                    </span>
+                    {Math.round(src.score * 100)}%
+                  </span>
+                ))}
+              </div>
+            )}
+            <button className="fb-copy-btn" onClick={copyAnswer} title="Copy answer">
+              <span className="material-symbols-outlined" style={{ fontSize: 13 }}>
+                {copied ? "check" : "content_copy"}
+              </span>
+              {copied ? "copied" : "copy"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Thinking indicator (no answer yet) */}
+      {thinking && mode !== "answer" && mode !== "recording" && (
+        <div className="fb-thinking">
+          <span className="fb-thinking-dots">
+            <span /><span /><span />
           </span>
-        </button>
+          <span>thinking…</span>
+        </div>
+      )}
 
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder={
-            thinking
-              ? "thinking…"
-              : recording
-                ? "release mic to send"
-                : "Ask Omniscient…"
-          }
-          rows={1}
-          disabled={thinking || recording}
-          className="fb-input"
-        />
-
-        {recording ? (
-          <button className="fb-btn fb-btn-cancel" onClick={handleCancelTalking} title="Cancel">
-            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+      {/* Input row — always available except in recording */}
+      {mode !== "recording" && (
+        <div className="fb-input-row">
+          <button
+            className="fb-btn"
+            onClick={handleStartTalking}
+            title="Push to talk"
+            disabled={thinking}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>mic</span>
           </button>
-        ) : (
+
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder={
+              thinking
+                ? "thinking…"
+                : sessionId
+                  ? "Follow up…"
+                  : "Ask Omniscient…"
+            }
+            rows={1}
+            disabled={thinking}
+            className="fb-input"
+          />
+
           <button
             className="fb-btn fb-btn-send"
             onClick={handleSend}
             disabled={!input.trim() || thinking}
             title="Send (Enter)"
           >
-            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>
-              arrow_upward
-            </span>
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_upward</span>
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* footer chrome */}
-      <div className="fb-footer">
-        {sessionId && (
+      {/* Recording controls */}
+      {mode === "recording" && (
+        <div className="fb-input-row">
           <button
-            className="fb-icon-btn"
-            onClick={handleNewChat}
-            title="New chat (clear context)"
+            className="fb-btn fb-btn-recording"
+            onClick={handleStopTalking}
+            title="Stop & send"
           >
-            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>
-              add
-            </span>
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>stop</span>
           </button>
-        )}
-        <button className="fb-icon-btn" onClick={handleOpenMain} title="Open main window">
-          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>
-            open_in_new
-          </span>
-        </button>
-        <button className="fb-icon-btn" onClick={handleClose} title="Close (Esc)">
-          <span className="material-symbols-outlined" style={{ fontSize: 14 }}>
-            close
-          </span>
-        </button>
-      </div>
-
-      {/* Session indicator — small badge near the input */}
-      {sessionId && mode !== "recording" && (
-        <div
-          style={{
-            position: "absolute",
-            top: 4,
-            left: 10,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            fontSize: 9,
-            fontWeight: 500,
-            color: "var(--accent)",
-            background: "var(--accent-soft)",
-            padding: "2px 6px",
-            borderRadius: 999,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            pointerEvents: "none",
-          }}
-        >
-          <span
-            style={{
-              width: 4,
-              height: 4,
-              borderRadius: "50%",
-              background: "var(--accent)",
-            }}
-          />
-          chat
+          <div className="fb-rec-hint">
+            {liveText
+              ? `${liveText.split(/\s+/).length} word${liveText.split(/\s+/).length === 1 ? "" : "s"} captured`
+              : "VAD will detect end of speech"}
+          </div>
+          <button className="fb-btn fb-btn-cancel" onClick={handleCancelTalking} title="Discard">
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+          </button>
         </div>
       )}
     </div>
   );
-}
-
-// Need to add this to tauri.ts — wrapper for the new commands
-declare global {
-  interface Window {
-    __TAURI_INTERNALS__?: unknown;
-  }
 }
