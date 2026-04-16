@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::sync::RwLock;
 
 /// OpenAI-compatible chat completion client (works with Ollama, OpenAI, etc.)
+/// Model is hot-swappable via set_model().
 pub struct LlmClient {
     base_url: String,
-    model: String,
+    model: RwLock<String>,
     http: reqwest::Client,
 }
 
@@ -35,7 +37,7 @@ impl LlmClient {
     pub fn new(base_url: &str, model: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            model: model.to_string(),
+            model: RwLock::new(model.to_string()),
             http: reqwest::Client::new(),
         }
     }
@@ -43,6 +45,17 @@ impl LlmClient {
     /// Default: Ollama on localhost
     pub fn ollama(model: &str) -> Self {
         Self::new("http://localhost:11434", model)
+    }
+
+    /// Get the currently active model
+    pub fn model(&self) -> String {
+        self.model.read().unwrap().clone()
+    }
+
+    /// Hot-swap the active model (e.g. between qwen2.5:7b and qwen2.5:14b)
+    pub fn set_model(&self, model: &str) {
+        *self.model.write().unwrap() = model.to_string();
+        log::info!("LLM model switched to: {}", model);
     }
 
     /// Send a chat completion request and return the response text
@@ -70,7 +83,7 @@ impl LlmClient {
         let url = format!("{}/v1/chat/completions", self.base_url);
 
         let request = ChatRequest {
-            model: self.model.clone(),
+            model: self.model(),
             messages: messages.to_vec(),
             temperature: 0.3,
             stream: false,

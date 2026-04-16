@@ -326,6 +326,48 @@ async fn check_llm_status(
     llm.health_check().await
 }
 
+/// Get the active LLM model name
+#[tauri::command]
+fn get_active_model(llm: tauri::State<'_, Arc<LlmClient>>) -> String {
+    llm.model()
+}
+
+/// Set the active LLM model and persist to settings
+#[tauri::command]
+fn set_active_model(
+    model: String,
+    llm: tauri::State<'_, Arc<LlmClient>>,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    llm.set_model(&model);
+    let conn = db.conn();
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('active_llm_model', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![model],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(model)
+}
+
+/// List installed Ollama models
+#[tauri::command]
+async fn list_ollama_models() -> Result<Vec<serde_json::Value>, String> {
+    let resp = reqwest::get("http://localhost:11434/api/tags")
+        .await
+        .map_err(|e| format!("Ollama unreachable: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama models: {}", e))?;
+    let models = data
+        .get("models")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(models)
+}
+
 /// Process a conversation through the LLM pipeline (extract structure, tasks, memories)
 #[tauri::command]
 async fn process_conversation_cmd(
@@ -369,8 +411,19 @@ pub fn run() {
     ));
     let speech_buffer = Arc::new(Mutex::new(SpeechBuffer::new()));
 
-    // Default to Ollama with qwen2.5:14b (instruct version, best for our 16GB GPU)
-    let llm_client = Arc::new(LlmClient::ollama("qwen2.5:14b"));
+    // Load saved model preference from DB, default to 7b (safe while gaming)
+    let saved_model: Option<String> = {
+        let conn = database.conn();
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'active_llm_model'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+    };
+    let initial_model = saved_model.unwrap_or_else(|| "qwen2.5:7b".to_string());
+    log::info!("Initial LLM model: {}", initial_model);
+    let llm_client = Arc::new(LlmClient::ollama(&initial_model));
 
     // Tracks the currently active conversation_id while recording
     let current_conversation: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -405,6 +458,9 @@ pub fn run() {
             transcribe_pending,
             has_whisper_model,
             check_llm_status,
+            get_active_model,
+            set_active_model,
+            list_ollama_models,
             process_conversation_cmd,
             get_conversations,
             get_memories,

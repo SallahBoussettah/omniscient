@@ -53,6 +53,30 @@ export async function checkLlmStatus(): Promise<boolean> {
   return invoke("check_llm_status");
 }
 
+export async function getActiveModel(): Promise<string> {
+  return invoke("get_active_model");
+}
+
+export async function setActiveModel(model: string): Promise<string> {
+  return invoke("set_active_model", { model });
+}
+
+export interface OllamaModel {
+  name: string;
+  modified_at: string;
+  size: number;
+  digest: string;
+  details?: {
+    family: string;
+    parameter_size: string;
+    quantization_level: string;
+  };
+}
+
+export async function listOllamaModels(): Promise<OllamaModel[]> {
+  return invoke("list_ollama_models");
+}
+
 export async function processConversation(conversationId: string): Promise<string> {
   return invoke("process_conversation_cmd", { conversationId });
 }
