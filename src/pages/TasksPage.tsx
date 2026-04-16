@@ -6,15 +6,15 @@ export function TasksPage() {
   const [tasks, setTasks] = useState<ActionItemData[]>([]);
 
   useEffect(() => {
-    loadTasks();
+    load();
   }, []);
 
-  async function loadTasks() {
+  async function load() {
     try {
       const data = (await getActionItems()) as unknown as ActionItemData[];
       setTasks(data);
     } catch {
-      // ignore
+      /* ignore */
     }
   }
 
@@ -22,12 +22,10 @@ export function TasksPage() {
     try {
       await toggleActionItem(id, !currentCompleted);
       setTasks((prev) =>
-        prev.map((t) =>
-          t.id === id ? { ...t, completed: !currentCompleted } : t
-        )
+        prev.map((t) => (t.id === id ? { ...t, completed: !currentCompleted } : t))
       );
     } catch {
-      // ignore
+      /* ignore */
     }
   }
 
@@ -36,42 +34,44 @@ export function TasksPage() {
 
   return (
     <>
-      <div className="page-header">
+      <header className="page-header">
         <h1 className="page-title">Tasks</h1>
         <p className="page-subtitle">
-          {pending.length} pending, {done.length} completed.
+          Things you mentioned needing to do. Check them off as you go.
         </p>
-      </div>
+      </header>
 
       {tasks.length === 0 ? (
-        <div className="empty-state">
-          <span className="material-symbols-outlined">task_alt</span>
-          <p className="primary-text">No tasks yet</p>
-          <p className="secondary-text">
-            Mention something to do in a conversation and it shows up here
+        <div className="empty">
+          <div className="empty-mark">
+            <span className="material-symbols-outlined">task_alt</span>
+          </div>
+          <p className="empty-voice">No tasks waiting on you.</p>
+          <p className="empty-hint">
+            When you say something like "remind me to..." or "I need to..." in a
+            conversation, I'll capture it here.
           </p>
         </div>
       ) : (
         <>
           {pending.length > 0 && (
-            <div style={{ marginBottom: "32px" }}>
-              <div style={{ fontSize: "10px", fontWeight: 500, color: "var(--text-4)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>
-                Pending
+            <section className="date-section">
+              <div className="date-section-label">
+                {pending.length} pending
               </div>
               {pending.map((task) => (
                 <TaskRow key={task.id} task={task} onToggle={handleToggle} />
               ))}
-            </div>
+            </section>
           )}
+
           {done.length > 0 && (
-            <div>
-              <div style={{ fontSize: "10px", fontWeight: 500, color: "var(--text-4)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>
-                Completed
-              </div>
+            <section className="date-section">
+              <div className="date-section-label">Completed</div>
               {done.map((task) => (
                 <TaskRow key={task.id} task={task} onToggle={handleToggle} />
               ))}
-            </div>
+            </section>
           )}
         </>
       )}
@@ -86,33 +86,25 @@ function TaskRow({
   task: ActionItemData;
   onToggle: (id: string, completed: boolean) => void;
 }) {
-  const priorityColors: Record<string, string> = {
-    high: "#ef4444",
-    medium: "var(--amber)",
-    low: "var(--text-4)",
-  };
-
   return (
     <div
-      className="conversation-row"
-      style={{ alignItems: "center" }}
+      className="conv-row"
       onClick={() => onToggle(task.id, task.completed)}
+      style={{ alignItems: "center" }}
     >
-      <span
-        className="material-symbols-outlined"
-        style={{
-          fontSize: "20px",
-          marginRight: "14px",
-          color: task.completed ? "var(--green)" : "var(--text-4)",
-          cursor: "pointer",
-        }}
-      >
-        {task.completed ? "check_circle" : "radio_button_unchecked"}
-      </span>
-      <div style={{ flex: 1 }}>
+      <div className="conv-icon" style={{
+        background: task.completed ? "transparent" : "var(--accent-faint)",
+        color: task.completed ? "var(--semantic-active)" : "var(--accent)",
+      }}>
+        <span className="material-symbols-outlined">
+          {task.completed ? "check_circle" : "radio_button_unchecked"}
+        </span>
+      </div>
+      <div className="conv-body">
         <div
+          className="conv-title"
           style={{
-            fontSize: "13px",
+            fontWeight: 400,
             color: task.completed ? "var(--text-3)" : "var(--text-1)",
             textDecoration: task.completed ? "line-through" : "none",
           }}
@@ -120,17 +112,9 @@ function TaskRow({
           {task.description}
         </div>
       </div>
-      <span
-        style={{
-          fontSize: "10px",
-          padding: "2px 8px",
-          borderRadius: "10px",
-          background: "rgba(255,255,255,0.04)",
-          color: priorityColors[task.priority] || "var(--text-4)",
-        }}
-      >
-        {task.priority}
-      </span>
+      <div className="conv-meta">
+        <span className={`priority priority-${task.priority}`}>{task.priority}</span>
+      </div>
     </div>
   );
 }

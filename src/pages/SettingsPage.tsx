@@ -1,36 +1,54 @@
+interface RowProps {
+  label: string;
+  value: string;
+  hint?: string;
+}
+
+function Row({ label, value, hint }: RowProps) {
+  return (
+    <div className="conv-row" style={{ alignItems: "center", cursor: "default" }}>
+      <div className="conv-body">
+        <div className="conv-title" style={{ fontWeight: 400 }}>{label}</div>
+        {hint && <div className="conv-overview">{hint}</div>}
+      </div>
+      <div className="conv-meta">
+        <span className="conv-time">{value}</span>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   return (
     <>
-      <div className="page-header">
+      <header className="page-header">
         <h1 className="page-title">Settings</h1>
-        <p className="page-subtitle">Configure providers, audio, and screen capture.</p>
-      </div>
+        <p className="page-subtitle">
+          Configure how I listen, think, and remember.
+        </p>
+      </header>
 
-      <div className="settings-section">
-        <div className="settings-section-title">AI Provider</div>
-        <div className="settings-card">
-          <div className="settings-row"><span className="label">Provider</span><span className="value">Ollama (local)</span></div>
-          <div className="settings-row"><span className="label">Model</span><span className="value">Not configured</span></div>
-          <div className="settings-row"><span className="label">Endpoint</span><span className="value">http://localhost:11434</span></div>
-        </div>
-      </div>
+      <section className="date-section">
+        <div className="date-section-label">Intelligence</div>
+        <Row label="Provider" value="Ollama" hint="Local, runs on your GPU" />
+        <Row label="Model" value="qwen2.5:14b-instruct" hint="8.5GB · best for your RX 9070 XT" />
+        <Row label="Endpoint" value="localhost:11434" />
+      </section>
 
-      <div className="settings-section">
-        <div className="settings-section-title">Audio</div>
-        <div className="settings-card">
-          <div className="settings-row"><span className="label">Input device</span><span className="value">Default</span></div>
-          <div className="settings-row"><span className="label">System audio</span><span className="value">Off</span></div>
-          <div className="settings-row"><span className="label">VAD sensitivity</span><span className="value">Medium</span></div>
-        </div>
-      </div>
+      <section className="date-section">
+        <div className="date-section-label">Listening</div>
+        <Row label="Microphone" value="System default" />
+        <Row label="System audio" value="Off" hint="Capture audio from other apps" />
+        <Row label="Voice activity sensitivity" value="Medium" />
+        <Row label="Transcription model" value="Whisper base.en" hint="~140MB · downloads on first use" />
+      </section>
 
-      <div className="settings-section">
-        <div className="settings-section-title">Screen Capture</div>
-        <div className="settings-card">
-          <div className="settings-row"><span className="label">Interval</span><span className="value">3 seconds</span></div>
-          <div className="settings-row"><span className="label">OCR</span><span className="value">Tesseract</span></div>
-        </div>
-      </div>
+      <section className="date-section">
+        <div className="date-section-label">Watching</div>
+        <Row label="Screen capture" value="Off" hint="Coming in Phase 5" />
+        <Row label="Capture interval" value="3 seconds" />
+        <Row label="OCR engine" value="Tesseract" />
+      </section>
     </>
   );
 }

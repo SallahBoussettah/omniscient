@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import {
   startRecording,
   stopRecording,
-  getAudioLevel,
   isRecording as checkRecording,
   initTranscriber,
   transcribePending,
@@ -10,231 +9,223 @@ import {
 } from "../lib/tauri";
 import type { TranscriptSegment } from "../lib/tauri";
 
-const mockConversations = [
-  { id: "1", icon: "build", title: "Omniscient Architecture Sync", overview: "Discussed memory indexing latency improvements and ambient listening protocols", time: "3h ago", tag: "work" },
-  { id: "2", icon: "nightlight", title: "Evening Reflection", overview: "Personal notes on today's focus levels and evening wind-down routine", time: "5h ago", tag: "personal" },
-  { id: "3", icon: "lightbulb", title: "Neural Interface Concept", overview: "Mapping memory clusters to spatial coordinates in a virtual room", time: "8h ago", tag: "idea" },
-  { id: "4", icon: "groups", title: "Product Review with Team", overview: "Sidebar hover states, divider opacity adjustments, onboarding flow", time: "10h ago", tag: "work" },
-  { id: "5", icon: "menu_book", title: "Book Recommendation", overview: "Marcus recommended The Overstory during afternoon chat", time: "14h ago", tag: "personal" },
+// Mock data — will be replaced with real DB query in Phase 4
+interface Conv {
+  id: string;
+  icon: string;
+  title: string;
+  overview: string;
+  ts: Date;
+  tag: string;
+}
+
+const mockConversations: Conv[] = [
+  { id: "1", icon: "code", title: "Architecture sync with Sarah", overview: "Memory indexing latency improvements and ambient listening protocols", ts: hoursAgo(3), tag: "work" },
+  { id: "2", icon: "self_improvement", title: "Evening reflection", overview: "Personal notes on today's focus levels and evening wind-down", ts: hoursAgo(5), tag: "personal" },
+  { id: "3", icon: "lightbulb", title: "Neural interface concept", overview: "Mapping memory clusters to spatial coordinates in a virtual room", ts: hoursAgo(8), tag: "idea" },
+  { id: "4", icon: "groups", title: "Product review with team", overview: "Sidebar hover states, divider opacity adjustments, onboarding flow", ts: hoursAgo(26), tag: "work" },
+  { id: "5", icon: "menu_book", title: "Book recommendation", overview: 'Marcus mentioned "The Overstory" during afternoon chat', ts: hoursAgo(38), tag: "personal" },
+  { id: "6", icon: "code", title: "Refactoring auth module", overview: "Discussed token rotation and session management edge cases", ts: hoursAgo(72), tag: "work" },
 ];
+
+function hoursAgo(h: number): Date {
+  return new Date(Date.now() - h * 60 * 60 * 1000);
+}
 
 function getGreeting(): string {
   const h = new Date().getHours();
-  return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+  if (h < 5) return "Late night, Salah";
+  if (h < 12) return "Good morning, Salah";
+  if (h < 18) return "Good afternoon, Salah";
+  return "Good evening, Salah";
 }
+
+function timeAgo(d: Date): string {
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function dateBucket(d: Date): "Today" | "Yesterday" | "This Week" | "Earlier" {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayMs = 86400000;
+  const ageMs = today.getTime() - d.getTime();
+  if (d >= today) return "Today";
+  if (ageMs < dayMs) return "Yesterday";
+  if (ageMs < 7 * dayMs) return "This Week";
+  return "Earlier";
+}
+
+function groupByDate(items: Conv[]): Record<string, Conv[]> {
+  const groups: Record<string, Conv[]> = {};
+  for (const item of items) {
+    const bucket = dateBucket(item.ts);
+    if (!groups[bucket]) groups[bucket] = [];
+    groups[bucket].push(item);
+  }
+  return groups;
+}
+
+const SECTION_ORDER = ["Today", "Yesterday", "This Week", "Earlier"];
 
 export function ConversationsPage() {
   const [recording, setRecording] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
   const [modelReady, setModelReady] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState<TranscriptSegment[]>([]);
-  const levelInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const transcribeInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcribeRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Check initial state
   useEffect(() => {
     checkRecording().then(setRecording).catch(() => {});
     hasWhisperModel().then(setModelReady).catch(() => {});
   }, []);
 
-  // Poll audio level while recording
   useEffect(() => {
     if (recording) {
-      levelInterval.current = setInterval(async () => {
+      transcribeRef.current = setInterval(async () => {
         try {
-          setAudioLevel(await getAudioLevel());
-        } catch { /* ignore */ }
-      }, 100);
-
-      // Poll for transcription results every 2s
-      transcribeInterval.current = setInterval(async () => {
-        try {
-          const segments = await transcribePending();
-          if (segments.length > 0) {
-            setLiveTranscript((prev) => [...prev, ...segments]);
-          }
-        } catch { /* ignore */ }
+          const segs = await transcribePending();
+          if (segs.length) setLiveTranscript((prev) => [...prev, ...segs]);
+        } catch {
+          /* ignore */
+        }
       }, 2000);
     } else {
-      if (levelInterval.current) clearInterval(levelInterval.current);
-      if (transcribeInterval.current) clearInterval(transcribeInterval.current);
-      levelInterval.current = null;
-      transcribeInterval.current = null;
-      setAudioLevel(0);
+      if (transcribeRef.current) clearInterval(transcribeRef.current);
     }
     return () => {
-      if (levelInterval.current) clearInterval(levelInterval.current);
-      if (transcribeInterval.current) clearInterval(transcribeInterval.current);
+      if (transcribeRef.current) clearInterval(transcribeRef.current);
     };
   }, [recording]);
 
-  async function handleInitModel() {
-    setModelLoading(true);
-    try {
-      await initTranscriber();
-      setModelReady(true);
-    } catch (err) {
-      console.error("Failed to init transcriber:", err);
-    }
-    setModelLoading(false);
-  }
-
   async function toggleRecording() {
-    if (!modelReady) {
-      await handleInitModel();
-    }
     try {
       if (recording) {
         await stopRecording();
         setRecording(false);
       } else {
         if (!modelReady) {
-          await handleInitModel();
+          setModelLoading(true);
+          await initTranscriber();
+          setModelReady(true);
+          setModelLoading(false);
         }
         await startRecording();
         setRecording(true);
       }
     } catch (err) {
-      console.error("Recording toggle failed:", err);
+      console.error("Recording failed:", err);
+      setModelLoading(false);
     }
   }
 
+  const grouped = groupByDate(mockConversations);
+
   return (
     <>
-      <div className="page-header">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      <header className="page-header">
+        <div className="page-header-row">
           <div>
-            <h1 className="page-title">{getGreeting()}, Salah</h1>
-            <p className="page-subtitle">5 conversations today. 4 memories extracted.</p>
+            <h1 className="page-greeting">{getGreeting()}</h1>
+            <p className="page-subtitle">
+              {mockConversations.filter((c) => dateBucket(c.ts) === "Today").length} captured today.
+              4 new memories extracted.
+            </p>
           </div>
-          {recording && (
-            <div className="recording-pill">
-              <span className="recording-dot" />
+          {recording ? (
+            <span className="status-pill is-active">
+              <span className="status-dot is-active" />
               Listening
-              {audioLevel > 0 && (
-                <span style={{ marginLeft: 4, opacity: 0.6 }}>{audioLevel}%</span>
-              )}
-            </div>
-          )}
-          {!modelReady && !recording && (
+            </span>
+          ) : modelReady ? (
+            <span className="status-pill">
+              <span className="status-dot" />
+              Idle
+            </span>
+          ) : (
             <button
-              onClick={handleInitModel}
-              disabled={modelLoading}
-              style={{
-                background: "var(--bg-card)",
-                border: "1px solid var(--bg-card-border)",
-                color: "var(--text-2)",
-                padding: "6px 14px",
-                borderRadius: "8px",
-                fontSize: "12px",
-                cursor: modelLoading ? "wait" : "pointer",
+              className="filter-pill"
+              onClick={async () => {
+                setModelLoading(true);
+                try {
+                  await initTranscriber();
+                  setModelReady(true);
+                } catch (e) {
+                  console.error(e);
+                }
+                setModelLoading(false);
               }}
+              disabled={modelLoading}
             >
-              {modelLoading ? "Downloading model..." : "Setup Whisper Model"}
+              {modelLoading ? "Downloading model…" : "Set up listening"}
             </button>
           )}
         </div>
+      </header>
+
+      <div className="stats-strip">
+        <div className="stat">
+          <div className="stat-num">{mockConversations.length}</div>
+          <div className="stat-label">conversations</div>
+        </div>
+        <div className="stat">
+          <div className="stat-num">53</div>
+          <div className="stat-label">memories</div>
+        </div>
+        <div className="stat">
+          <div className="stat-num">31</div>
+          <div className="stat-label">tasks</div>
+        </div>
       </div>
 
-      {/* Live transcript (shown when recording or has content) */}
       {liveTranscript.length > 0 && (
-        <div style={{
-          marginBottom: "32px",
-          padding: "16px 20px",
-          borderRadius: "12px",
-          background: "var(--bg-card)",
-          border: "1px solid var(--bg-card-border)",
-          maxHeight: "200px",
-          overflowY: "auto",
-        }}>
-          <div style={{ fontSize: "11px", color: "var(--text-4)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>
-            Live Transcript
-          </div>
+        <div className="card" style={{ marginBottom: "var(--space-8)", maxHeight: 220, overflowY: "auto" }}>
+          <div className="sidebar-section-label" style={{ padding: 0, marginBottom: 12 }}>Live transcript</div>
           {liveTranscript.map((seg, i) => (
-            <p key={i} style={{ fontSize: "13px", color: "var(--text-1)", marginBottom: "4px", lineHeight: 1.5 }}>
+            <p key={i} style={{ fontSize: "var(--text-base)", color: "var(--text-1)", marginBottom: 6 }}>
               {seg.text}
             </p>
           ))}
         </div>
       )}
 
-      <div className="stats-row">
-        <div className="stat-item">
-          <div className="stat-value">14</div>
-          <div className="stat-label">conversations</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-value">53</div>
-          <div className="stat-label">memories</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-value">31</div>
-          <div className="stat-label">tasks</div>
-        </div>
-      </div>
-
-      <div className="conversation-list">
-        {mockConversations.map((c) => (
-          <div key={c.id} className="conversation-row">
-            <span className="material-symbols-outlined conversation-emoji">{c.icon}</span>
-            <div className="conversation-content">
-              <div className="conversation-title">{c.title}</div>
-              <div className="conversation-overview">{c.overview}</div>
+      {SECTION_ORDER.map((bucket) => {
+        const items = grouped[bucket];
+        if (!items || items.length === 0) return null;
+        return (
+          <section key={bucket} className="date-section">
+            <div className="date-section-label">{bucket}</div>
+            <div>
+              {items.map((c) => (
+                <div key={c.id} className="conv-row">
+                  <div className="conv-icon">
+                    <span className="material-symbols-outlined">{c.icon}</span>
+                  </div>
+                  <div className="conv-body">
+                    <div className="conv-title">{c.title}</div>
+                    <div className="conv-overview">{c.overview}</div>
+                  </div>
+                  <div className="conv-meta">
+                    <span className="conv-time">{timeAgo(c.ts)}</span>
+                    <span className="conv-tag">{c.tag}</span>
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="conversation-meta">
-              <span className="conversation-time">{c.time}</span>
-              <span className="conversation-tag">{c.tag}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="insight-cards">
-        <div className="insight-card">
-          <div className="insight-card-title">Memory Consolidation</div>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div style={{ flex: 1, height: "4px", borderRadius: "2px", background: "rgba(255,255,255,0.06)" }}>
-              <div style={{ width: "82%", height: "100%", borderRadius: "2px", background: "var(--accent)" }} />
-            </div>
-            <span className="insight-card-subtitle">82%</span>
-          </div>
-        </div>
-        <div className="insight-card">
-          <div className="insight-card-title">Today's Focus</div>
-          <div className="focus-bars">
-            {[40, 65, 30, 55, 80, 25, 60, 45].map((h, i) => (
-              <div key={i} className="focus-bar" style={{ height: `${h}%`, opacity: 0.25 + (h / 100) * 0.55 }} />
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Audio level bar */}
-      {recording && (
-        <div style={{
-          position: "fixed", bottom: 84, right: 24,
-          width: 48, height: 4, borderRadius: 2,
-          background: "rgba(255,255,255,0.06)", overflow: "hidden",
-        }}>
-          <div style={{
-            width: `${audioLevel}%`, height: "100%", borderRadius: 2,
-            background: "var(--green)", transition: "width 0.1s ease",
-          }} />
-        </div>
-      )}
+          </section>
+        );
+      })}
 
       <button
-        className="fab"
+        className={`fab ${recording ? "is-recording" : ""}`}
         onClick={toggleRecording}
-        style={{
-          background: recording ? "var(--green)" : "var(--accent)",
-          boxShadow: recording
-            ? "0 4px 24px rgba(52, 211, 153, 0.35)"
-            : "0 4px 24px rgba(124, 108, 240, 0.35)",
-        }}
+        title={recording ? "Stop listening" : "Start listening"}
       >
-        <span className="material-symbols-outlined" style={{ fontSize: "22px" }}>
+        <span className="material-symbols-outlined">
           {recording ? "stop" : "mic"}
         </span>
       </button>
