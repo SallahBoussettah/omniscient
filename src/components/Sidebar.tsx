@@ -1,109 +1,86 @@
+import {
+  Eye,
+  MessageCircle,
+  Brain,
+  CheckCircle,
+  Zap,
+  Rewind,
+  Crosshair,
+  Settings,
+} from "lucide-react";
 import type { Page } from "../App";
 
 interface NavItem {
   id: Page;
-  label: string;
-  icon: string;
+  icon: React.ElementType;
 }
 
 const navItems: NavItem[] = [
-  { id: "conversations", label: "Conversations", icon: "💬" },
-  { id: "memories", label: "Memories", icon: "🧠" },
-  { id: "tasks", label: "Tasks", icon: "✅" },
-  { id: "chat", label: "Chat", icon: "⚡" },
-  { id: "rewind", label: "Rewind", icon: "⏪" },
-  { id: "focus", label: "Focus", icon: "🎯" },
-];
-
-const bottomItems: NavItem[] = [
-  { id: "settings", label: "Settings", icon: "⚙️" },
+  { id: "conversations", icon: MessageCircle },
+  { id: "memories", icon: Brain },
+  { id: "tasks", icon: CheckCircle },
+  { id: "chat", icon: Zap },
+  { id: "rewind", icon: Rewind },
+  { id: "focus", icon: Crosshair },
 ];
 
 interface SidebarProps {
   activePage: Page;
   onNavigate: (page: Page) => void;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
 }
 
-export function Sidebar({
-  activePage,
-  onNavigate,
-  collapsed,
-  onToggleCollapse,
-}: SidebarProps) {
+export function Sidebar({ activePage, onNavigate }: SidebarProps) {
   return (
-    <aside
-      className={`flex flex-col border-r border-border bg-bg-secondary transition-all duration-200 ${
-        collapsed ? "w-16" : "w-56"
-      }`}
-    >
-      <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <button
-          onClick={onToggleCollapse}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
-        >
-          {collapsed ? "▶" : "◀"}
-        </button>
-        {!collapsed && (
-          <span className="text-sm font-semibold tracking-wide text-accent">
-            OMNISCIENT
-          </span>
-        )}
+    <aside className="fixed top-0 left-0 h-full w-16 bg-bg-sidebar flex flex-col items-center py-8 z-50 border-r border-white/5">
+      <div className="mb-12">
+        <Eye className="text-brand-purple opacity-70" size={28} strokeWidth={1.5} />
       </div>
 
-      <nav className="flex flex-1 flex-col justify-between p-2">
-        <div className="flex flex-col gap-1">
-          {navItems.map((item) => (
-            <NavButton
+      <nav className="flex flex-col items-center gap-8 flex-1">
+        {navItems.map((item) => {
+          const active = activePage === item.id;
+          return (
+            <button
               key={item.id}
-              item={item}
-              active={activePage === item.id}
-              collapsed={collapsed}
               onClick={() => onNavigate(item.id)}
-            />
-          ))}
-        </div>
-
-        <div className="flex flex-col gap-1">
-          {bottomItems.map((item) => (
-            <NavButton
-              key={item.id}
-              item={item}
-              active={activePage === item.id}
-              collapsed={collapsed}
-              onClick={() => onNavigate(item.id)}
-            />
-          ))}
-        </div>
+              className="group relative flex flex-col items-center transition-all duration-200 cursor-pointer"
+            >
+              <item.icon
+                size={22}
+                strokeWidth={1.5}
+                className={
+                  active
+                    ? "text-white"
+                    : "text-text-muted hover:text-white transition-colors duration-200"
+                }
+              />
+              {active && (
+                <div className="absolute -bottom-2 w-1 h-1 bg-brand-purple rounded-full" />
+              )}
+            </button>
+          );
+        })}
       </nav>
-    </aside>
-  );
-}
 
-function NavButton({
-  item,
-  active,
-  collapsed,
-  onClick,
-}: {
-  item: NavItem;
-  active: boolean;
-  collapsed: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
-        active
-          ? "bg-accent-subtle text-accent"
-          : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-      } ${collapsed ? "justify-center" : ""}`}
-      title={collapsed ? item.label : undefined}
-    >
-      <span className="text-base">{item.icon}</span>
-      {!collapsed && <span>{item.label}</span>}
-    </button>
+      <div className="mt-auto">
+        <button
+          onClick={() => onNavigate("settings")}
+          className="group flex flex-col items-center cursor-pointer"
+        >
+          <Settings
+            size={22}
+            strokeWidth={1.5}
+            className={
+              activePage === "settings"
+                ? "text-white"
+                : "text-text-muted hover:text-white transition-colors duration-200"
+            }
+          />
+          {activePage === "settings" && (
+            <div className="absolute mt-6 w-1 h-1 bg-brand-purple rounded-full" />
+          )}
+        </button>
+      </div>
+    </aside>
   );
 }

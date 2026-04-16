@@ -29,19 +29,14 @@ const pages: Record<Page, () => React.JSX.Element> = {
 
 export function App() {
   const [activePage, setActivePage] = useState<Page>("conversations");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const ActivePage = pages[activePage];
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
-      <Sidebar
-        activePage={activePage}
-        onNavigate={setActivePage}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
-      <main className="flex-1 overflow-y-auto bg-bg-primary">
+      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <div className="fixed left-16 top-0 bottom-0 w-px vertical-divider z-40" />
+      <main className="ml-16 flex-1 overflow-y-auto">
         <ActivePage />
       </main>
     </div>

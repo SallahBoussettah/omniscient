@@ -1,23 +1,30 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0a0a0f;
-  --color-bg-secondary: #12121a;
-  --color-bg-tertiary: #1a1a26;
-  --color-bg-hover: #22222e;
-  --color-border: #2a2a3a;
-  --color-border-subtle: #1e1e2e;
-  --color-text-primary: #e4e4ed;
-  --color-text-secondary: #8888a0;
-  --color-text-muted: #555568;
-  --color-accent: #6c5ce7;
-  --color-accent-hover: #7c6cf7;
-  --color-accent-subtle: #6c5ce720;
-  --color-success: #2ed573;
-  --color-warning: #ffa502;
-  --color-danger: #ff4757;
+  --color-brand-purple: #7c5cfc;
+  --color-brand-purple-glow: rgba(124, 92, 252, 0.3);
+  --color-brand-teal: #00d4aa;
+  --color-brand-amber: #ff9f43;
 
-  --font-family-sans: "JetBrains Mono", "Fira Code", monospace;
+  --color-bg-base: #0a0a12;
+  --color-bg-base-end: #0e0e18;
+  --color-bg-sidebar: #0d0d14;
+
+  --color-text-primary: rgba(255, 255, 255, 0.85);
+  --color-text-secondary: #9090a8;
+  --color-text-tertiary: #70708a;
+  --color-text-muted: #50506a;
+  --color-text-ghost: #3a3a52;
+
+  --color-border-subtle: rgba(255, 255, 255, 0.04);
+  --color-border-faint: rgba(255, 255, 255, 0.06);
+  --color-surface-hover: rgba(255, 255, 255, 0.04);
+  --color-surface-card: rgba(255, 255, 255, 0.03);
+  --color-surface-active: rgba(255, 255, 255, 0.02);
+
+  --font-family-headline: "Inter", sans-serif;
+  --font-family-body: "Inter", sans-serif;
+  --font-family-label: "Space Grotesk", "Inter", sans-serif;
 }
 
 * {
@@ -27,16 +34,17 @@
 }
 
 body {
-  background-color: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  font-family: var(--font-family-sans);
-  overflow: hidden;
+  background: linear-gradient(to bottom, var(--color-bg-base), var(--color-bg-base-end));
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-body);
+  min-height: 100vh;
+  overflow-x: hidden;
   user-select: none;
   -webkit-user-select: none;
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -44,10 +52,19 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
+.glow-purple {
+  box-shadow: 0 0 20px var(--color-brand-purple-glow);
+}
+
+.vertical-divider {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(124, 92, 252, 0.15) 50%,
+    transparent 100%
+  );
 }
