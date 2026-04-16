@@ -1,0 +1,129 @@
+# Omniscient — Phased Build Roadmap
+
+An always-on AI assistant for Linux that sees your screen, hears your conversations, extracts memories and tasks, and keeps you focused. Inspired by Omi. Built with Tauri + React + Rust.
+
+---
+
+## Phase 1: Foundation — Tauri App Shell + SQLite ✓
+
+- [x] Initialize Tauri v2 + React + TypeScript + Tailwind project
+- [x] Design and implement SQLite schema (14 tables + 3 FTS5 indexes)
+- [x] Build Rust database service with CRUD
+- [x] Create React UI — "Ambient Intelligence" design from Stitch
+- [x] Icon-only sidebar, personalized greeting, stat circles, conversation rows with accent lines + sparklines, insight cards, floating mic FAB
+- [x] System tray icon
+- [x] Settings page (placeholder)
+
+---
+
+## Phase 2: Audio Capture + Local Transcription
+
+- [ ] PipeWire/PulseAudio mic capture in Rust (16kHz mono PCM)
+- [ ] Integrate Silero VAD (ONNX) for voice activity detection
+- [ ] Integrate faster-whisper (Python sidecar) or whisper.cpp (native) for local STT
+- [ ] Buffer speech segments between VAD boundaries, transcribe each chunk
+- [ ] Store transcript segments in SQLite with timestamps
+- [ ] Basic live transcription view in React UI
+- [ ] System audio capture via PipeWire monitor source
+
+---
+
+## Phase 3: Conversation Processing + LLM Pipeline
+
+- [ ] Set up Ollama integration (OpenAI-compatible API client in Rust)
+- [ ] Port conversation processing pipeline from Omi:
+  - Structure extraction (title, overview, emoji, category)
+  - Action item extraction (confidence scoring, dedup, priority)
+  - Memory extraction (system + interesting, 15-word max, dedup)
+- [ ] Copy and adapt Omi's prompt templates
+- [ ] Conversation lifecycle: in_progress -> processing -> completed
+- [ ] Conversations list view with real data
+- [ ] Memories list view with categories
+- [ ] Action items view with completion toggle and priority
+
+---
+
+## Phase 4: AI Chat with Context
+
+- [ ] Local embeddings (sentence-transformers or ONNX model)
+- [ ] Vector storage (sqlite-vss or FAISS)
+- [ ] RAG pipeline: query -> embed -> find relevant context -> inject
+- [ ] Chat UI with message history, sessions
+- [ ] Support both local Ollama and external APIs as provider options
+
+---
+
+## Phase 5: Screen Capture + OCR + Rewind
+
+- [ ] PipeWire XDG Desktop Portal screen capture
+- [ ] Capture every ~1-3 seconds (event-driven or timer)
+- [ ] Perceptual dedup with dHash
+- [ ] Tesseract OCR on captured frames
+- [ ] FTS5 index over OCR text
+- [ ] Rewind/timeline view: scroll through screen history
+- [ ] Search across screen history
+
+---
+
+## Phase 6: Proactive Assistants (Focus + Tasks + Memory)
+
+- [ ] Window/app focus change detection via D-Bus
+- [ ] FocusAssistant: detect distraction, show nudge notifications
+- [ ] TaskAssistant: extract action items on context switch
+- [ ] MemoryAssistant: extract facts from screen content
+- [ ] Focus session tracking (start/end, distraction count, stats)
+- [ ] Daily productivity score
+
+---
+
+## Phase 7: Floating Control Bar
+
+- [ ] Secondary Tauri window (always-on-top, frameless)
+- [ ] Text input for quick AI questions
+- [ ] Push-to-talk for voice queries
+- [ ] Global keyboard shortcut to toggle
+
+---
+
+## Phase 8: Knowledge Graph + People
+
+- [ ] Knowledge graph extraction from conversations
+- [ ] People management with speaker profiles
+- [ ] Speaker diarization with pyannote
+- [ ] Knowledge graph visualization
+
+---
+
+## Phase 9: MCP Server + Integrations
+
+- [ ] MCP server (stdio) querying local SQLite
+- [ ] Tools: get_memories, create_memory, get_conversations, search
+- [ ] Integration with Claude Desktop / Cursor / Claude Code
+
+---
+
+## Phase 10: Polish
+
+- [ ] Auto-start on login
+- [ ] Data export/import
+- [ ] Encryption at rest (AES-256-GCM)
+- [ ] Performance optimization
+- [ ] Onboarding flow
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React + TypeScript + Tailwind CSS |
+| Desktop | Tauri v2 (Rust) |
+| Database | SQLite (WAL) + FTS5 |
+| Icons | Lucide React |
+| Audio | PipeWire / PulseAudio |
+| Screen | PipeWire XDG Portal |
+| STT | faster-whisper / whisper.cpp |
+| VAD | Silero ONNX |
+| OCR | Tesseract |
+| LLM | Ollama (local) + optional cloud |
+| Embeddings | sentence-transformers / ONNX |
