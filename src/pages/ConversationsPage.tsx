@@ -13,6 +13,7 @@ import {
   processConversation,
   checkLlmStatus,
   getRecordingStatus,
+  searchConversations,
 } from "../lib/tauri";
 import type {
   TranscriptSegment,
@@ -85,8 +86,11 @@ export function ConversationsPage({ onOpenConversation }: Props) {
   const [tasks, setTasks] = useState<ActionItemData[]>([]);
   const [processing, setProcessing] = useState(false);
   const [silenceMs, setSilenceMs] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
 
   const transcribeRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Auto-stop after this much continuous silence following actual speech
   const AUTO_STOP_SILENCE_MS = 60_000;
@@ -114,6 +118,37 @@ export function ConversationsPage({ onOpenConversation }: Props) {
     checkLlmStatus().then(setLlmReady).catch(() => {});
     loadData();
   }, [loadData]);
+
+  // Debounced search — runs 250ms after user stops typing
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(async () => {
+      const q = searchQuery.trim();
+      if (!q) {
+        // Empty query — restore the full list
+        try {
+          const convs = await getConversations();
+          setConversations(convs as unknown as Conversation[]);
+        } catch {
+          /* ignore */
+        }
+        setSearching(false);
+        return;
+      }
+      setSearching(true);
+      try {
+        const results = await searchConversations(q);
+        setConversations(results);
+      } catch (e) {
+        console.error("Search failed:", e);
+      }
+      setSearching(false);
+    }, 250);
+
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchQuery]);
 
   useEffect(() => {
     if (recording) {
@@ -301,6 +336,30 @@ export function ConversationsPage({ onOpenConversation }: Props) {
           )}
         </div>
       </header>
+
+      {/* Search bar */}
+      <div className="conv-search">
+        <span className="material-symbols-outlined conv-search-icon">search</span>
+        <input
+          type="text"
+          className="conv-search-input"
+          placeholder="Search by title, summary, or anything said…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+        />
+        {searchQuery && (
+          <button
+            className="conv-search-clear"
+            onClick={() => setSearchQuery("")}
+            title="Clear"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+          </button>
+        )}
+        {searching && (
+          <span className="conv-search-status">searching…</span>
+        )}
+      </div>
 
       <div className="stats-strip">
         <div className="stat">

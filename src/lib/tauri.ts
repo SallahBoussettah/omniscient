@@ -262,6 +262,10 @@ export async function getConversations(): Promise<Conversation[]> {
   return invoke("get_conversations");
 }
 
+export async function searchConversations(query: string): Promise<Conversation[]> {
+  return invoke("search_conversations", { query });
+}
+
 export interface MemoryItem {
   id: string;
   content: string;

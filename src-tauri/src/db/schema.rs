@@ -197,6 +197,41 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         );
         CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
 
+        -- Triggers to keep FTS5 indexes in sync with their source tables
+        CREATE TRIGGER IF NOT EXISTS transcripts_fts_insert
+            AFTER INSERT ON transcript_segments
+            BEGIN
+                INSERT INTO transcripts_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+        CREATE TRIGGER IF NOT EXISTS transcripts_fts_delete
+            AFTER DELETE ON transcript_segments
+            BEGIN
+                INSERT INTO transcripts_fts(transcripts_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+            END;
+        CREATE TRIGGER IF NOT EXISTS transcripts_fts_update
+            AFTER UPDATE ON transcript_segments
+            BEGIN
+                INSERT INTO transcripts_fts(transcripts_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+                INSERT INTO transcripts_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+
+        CREATE TRIGGER IF NOT EXISTS memories_fts_insert
+            AFTER INSERT ON memories
+            BEGIN
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+        CREATE TRIGGER IF NOT EXISTS memories_fts_delete
+            AFTER DELETE ON memories
+            BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+            END;
+        CREATE TRIGGER IF NOT EXISTS memories_fts_update
+            AFTER UPDATE ON memories
+            BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+
         -- Indexes
         CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
         CREATE INDEX IF NOT EXISTS idx_conversations_started ON conversations(started_at);
@@ -208,6 +243,36 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_screenshots_timestamp ON screenshots(timestamp);
         ",
     )?;
+
+    // Backfill FTS5 indexes for any existing rows that aren't indexed yet.
+    // This handles migration from versions that didn't have triggers.
+    let transcript_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transcript_segments", [], |r| r.get(0))
+        .unwrap_or(0);
+    let transcript_fts_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transcripts_fts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if transcript_count > transcript_fts_count {
+        let _ = conn.execute(
+            "INSERT INTO transcripts_fts(rowid, text) SELECT rowid, text FROM transcript_segments
+             WHERE rowid NOT IN (SELECT rowid FROM transcripts_fts)",
+            [],
+        );
+    }
+
+    let memory_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .unwrap_or(0);
+    let memory_fts_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memories_fts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if memory_count > memory_fts_count {
+        let _ = conn.execute(
+            "INSERT INTO memories_fts(rowid, content) SELECT rowid, content FROM memories
+             WHERE rowid NOT IN (SELECT rowid FROM memories_fts)",
+            [],
+        );
+    }
 
     Ok(())
 }

@@ -287,6 +287,92 @@ fn transcribe_pending(
     Ok(all_results)
 }
 
+/// Search conversations by title, overview, and full-text transcript.
+/// Returns conversations matching the query, ranked roughly by recency.
+#[tauri::command]
+fn search_conversations(
+    query: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<serde_json::Value, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return get_conversations(db);
+    }
+
+    let conn = db.conn();
+
+    // Find conversation_ids whose transcript matches via FTS5
+    let fts_ids: Vec<String> = {
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT s.conversation_id FROM transcripts_fts f
+             JOIN transcript_segments s ON s.rowid = f.rowid
+             WHERE transcripts_fts MATCH ?1
+             LIMIT 200",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Err("FTS query failed".to_string()),
+        };
+        let collected: Vec<String> = stmt
+            .query_map([q], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        collected
+    };
+
+    let pattern = format!("%{}%", q.to_lowercase());
+
+    // Combine: title/overview LIKE OR FTS-found id
+    let mut sql = String::from(
+        "SELECT id, title, overview, emoji, category, status, started_at, finished_at
+         FROM conversations
+         WHERE discarded = 0 AND (
+             LOWER(IFNULL(title, '')) LIKE ?1
+             OR LOWER(IFNULL(overview, '')) LIKE ?1",
+    );
+    if !fts_ids.is_empty() {
+        sql.push_str(" OR id IN (");
+        for (i, _) in fts_ids.iter().enumerate() {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+            // we'll bind by position below — compute index 2..2+N
+        }
+        sql.push(')');
+    }
+    sql.push_str(") ORDER BY started_at DESC LIMIT 100");
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    // Bind: ?1 = pattern, then each id
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    params.push(Box::new(pattern));
+    for id in &fts_ids {
+        params.push(Box::new(id.clone()));
+    }
+    let param_refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|p| p.as_ref() as &dyn rusqlite::ToSql).collect();
+
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map(&*param_refs, |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "title": row.get::<_, Option<String>>(1)?,
+                "overview": row.get::<_, Option<String>>(2)?,
+                "emoji": row.get::<_, Option<String>>(3)?,
+                "category": row.get::<_, Option<String>>(4)?,
+                "status": row.get::<_, String>(5)?,
+                "started_at": row.get::<_, String>(6)?,
+                "finished_at": row.get::<_, Option<String>>(7)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(serde_json::json!(rows))
+}
+
 #[tauri::command]
 fn get_conversations(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
     let conn = db.conn();
@@ -1266,6 +1352,7 @@ pub fn run() {
             list_ollama_models,
             process_conversation_cmd,
             get_conversations,
+            search_conversations,
             get_conversation_detail,
             reprocess_conversation,
             delete_conversation,
