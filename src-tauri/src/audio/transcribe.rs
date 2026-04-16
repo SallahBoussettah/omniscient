@@ -100,8 +100,8 @@ pub fn default_model_path() -> PathBuf {
     models_dir().join("ggml-base.en.bin")
 }
 
-/// Download the whisper base.en model if not present
-pub fn ensure_model() -> Result<PathBuf, String> {
+/// Download the whisper base.en model if not present (async, non-blocking)
+pub async fn ensure_model() -> Result<PathBuf, String> {
     let path = default_model_path();
     if path.exists() {
         log::info!("Whisper model already exists at {:?}", path);
@@ -115,7 +115,8 @@ pub fn ensure_model() -> Result<PathBuf, String> {
     let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
     log::info!("Downloading whisper model from {}...", url);
 
-    let resp = reqwest::blocking::get(url)
+    let resp = reqwest::get(url)
+        .await
         .map_err(|e| format!("Failed to download model: {}", e))?;
 
     if !resp.status().is_success() {
@@ -124,6 +125,7 @@ pub fn ensure_model() -> Result<PathBuf, String> {
 
     let bytes = resp
         .bytes()
+        .await
         .map_err(|e| format!("Failed to read model bytes: {}", e))?;
 
     std::fs::write(&path, &bytes)

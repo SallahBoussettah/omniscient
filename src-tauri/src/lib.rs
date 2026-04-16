@@ -95,12 +95,15 @@ fn is_recording(audio_state: tauri::State<'_, Arc<AudioState>>) -> bool {
     audio_state.is_recording()
 }
 
-/// Download the whisper model if needed, then initialize the transcriber
+/// Download the whisper model if needed, then initialize the transcriber.
+/// Async so the download doesn't block the Tauri IPC thread.
 #[tauri::command]
-fn init_transcriber(
+async fn init_transcriber(
     transcriber: tauri::State<'_, TranscriberHolder>,
 ) -> Result<String, String> {
-    let model_path = transcribe::ensure_model()?;
+    let model_path = transcribe::ensure_model().await?;
+
+    // Loading the model itself is sync but fast (~1-2s)
     let t = Transcriber::new(&model_path)?;
 
     let mut holder = transcriber.0.lock().map_err(|e| e.to_string())?;
@@ -323,8 +326,8 @@ pub fn run() {
     ));
     let speech_buffer = Arc::new(Mutex::new(SpeechBuffer::new()));
 
-    // Default to Ollama with a common model — configurable later via settings
-    let llm_client = Arc::new(LlmClient::ollama("llama3.2"));
+    // Default to Ollama with qwen2.5:14b-instruct (best for our 16GB GPU)
+    let llm_client = Arc::new(LlmClient::ollama("qwen2.5:14b-instruct"));
 
     tauri::Builder::default()
         .setup(|app| {
