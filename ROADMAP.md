@@ -1,6 +1,6 @@
 # Omniscient — Phased Build Roadmap
 
-An always-on AI assistant for Linux that sees your screen, hears your conversations, extracts memories and tasks, and keeps you focused. Inspired by Omi. Built with Tauri + React + Rust.
+An always-on AI assistant for Linux that sees your screen, hears your conversations, extracts memories and tasks, and keeps you focused. Built with Tauri + React + Rust.
 
 ---
 
@@ -35,11 +35,11 @@ An always-on AI assistant for Linux that sees your screen, hears your conversati
 ## Phase 3: Conversation Processing + LLM Pipeline
 
 - [x] Set up Ollama integration (OpenAI-compatible API client, works with any provider)
-- [x] Port conversation processing pipeline from Omi:
+- [x] Conversation processing pipeline:
   - Structure extraction (title, overview, emoji, category)
   - Action item extraction (confidence scoring, priority, 0.7 threshold)
   - Memory extraction (system + interesting, 15-word max)
-- [x] Prompt templates adapted from Omi's battle-tested prompts
+- [x] Prompt templates for structured JSON extraction
 - [x] Conversation lifecycle: transcript -> LLM processing -> completed with metadata in SQLite
 - [x] Conversations list view with real data from DB
 - [x] Memories list view with filter tabs (all/system/interesting)

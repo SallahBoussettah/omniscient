@@ -1,7 +1,44 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 dist/
+build/
 target/
-*.log
-.DS_Store
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+
+# Environment / secrets
 .env
 .env.local
+.env.*.local
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Tauri
+src-tauri/Cargo.lock.bak
+
+# Internal docs not for the public repo
+OMI-DESIGN.md
+.impeccable.md
+
+# User data (just in case anyone runs the app from this dir)
+*.db
+*.db-shm
+*.db-wal

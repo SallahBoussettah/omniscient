@@ -133,7 +133,7 @@ function SidebarItem({ item, active, onClick, audioBars }: SidebarItemProps) {
 
 /**
  * 4 vertical bars that scale with audio level, replacing the icon
- * when recording is active. Inspired by Omi's sidebar visualization.
+ * when recording is active.
  */
 function AudioBars({ level }: { level: number }) {
   // 4 bars with different sensitivity ranges (lower bars react first)
