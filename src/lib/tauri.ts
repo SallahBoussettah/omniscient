@@ -54,3 +54,47 @@ export async function checkLlmStatus(): Promise<boolean> {
 export async function processConversation(conversationId: string): Promise<string> {
   return invoke("process_conversation_cmd", { conversationId });
 }
+
+export interface Conversation {
+  id: string;
+  title: string | null;
+  overview: string | null;
+  emoji: string | null;
+  category: string | null;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export async function getConversations(): Promise<Conversation[]> {
+  return invoke("get_conversations");
+}
+
+export interface MemoryItem {
+  id: string;
+  content: string;
+  category: string;
+  conversation_id: string | null;
+  created_at: string;
+}
+
+export async function getMemories(): Promise<MemoryItem[]> {
+  return invoke("get_memories");
+}
+
+export interface ActionItemData {
+  id: string;
+  description: string;
+  completed: boolean;
+  priority: string;
+  conversation_id: string | null;
+  created_at: string;
+}
+
+export async function getActionItems(): Promise<ActionItemData[]> {
+  return invoke("get_action_items");
+}
+
+export async function toggleActionItem(id: string, completed: boolean): Promise<string> {
+  return invoke("toggle_action_item", { id, completed });
+}

@@ -32,14 +32,14 @@ An always-on AI assistant for Linux that sees your screen, hears your conversati
 
 ## Phase 3: Conversation Processing + LLM Pipeline
 
-- [ ] Set up Ollama integration (OpenAI-compatible API client in Rust)
-- [ ] Port conversation processing pipeline from Omi:
+- [x] Set up Ollama integration (OpenAI-compatible API client, works with any provider)
+- [x] Port conversation processing pipeline from Omi:
   - Structure extraction (title, overview, emoji, category)
-  - Action item extraction (confidence scoring, dedup, priority)
-  - Memory extraction (system + interesting, 15-word max, dedup)
-- [ ] Copy and adapt Omi's prompt templates
-- [ ] Conversation lifecycle: in_progress -> processing -> completed
-- [ ] Conversations list view with real data
+  - Action item extraction (confidence scoring, priority, 0.7 threshold)
+  - Memory extraction (system + interesting, 15-word max)
+- [x] Prompt templates adapted from Omi's battle-tested prompts
+- [x] Conversation lifecycle: transcript -> LLM processing -> completed with metadata in SQLite
+- [ ] Conversations list view with real data from DB
 - [ ] Memories list view with categories
 - [ ] Action items view with completion toggle and priority
 

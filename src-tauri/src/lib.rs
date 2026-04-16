@@ -166,6 +166,106 @@ fn transcribe_pending(
     Ok(all_results)
 }
 
+#[tauri::command]
+fn get_conversations(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, overview, emoji, category, status, started_at, finished_at
+             FROM conversations WHERE discarded = 0 ORDER BY started_at DESC LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "title": row.get::<_, Option<String>>(1)?,
+                "overview": row.get::<_, Option<String>>(2)?,
+                "emoji": row.get::<_, Option<String>>(3)?,
+                "category": row.get::<_, Option<String>>(4)?,
+                "status": row.get::<_, String>(5)?,
+                "started_at": row.get::<_, String>(6)?,
+                "finished_at": row.get::<_, Option<String>>(7)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(serde_json::json!(rows))
+}
+
+#[tauri::command]
+fn get_memories(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, content, category, conversation_id, created_at
+             FROM memories WHERE is_dismissed = 0 ORDER BY created_at DESC LIMIT 100",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "content": row.get::<_, String>(1)?,
+                "category": row.get::<_, String>(2)?,
+                "conversation_id": row.get::<_, Option<String>>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(serde_json::json!(rows))
+}
+
+#[tauri::command]
+fn get_action_items(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, description, completed, priority, conversation_id, created_at
+             FROM action_items ORDER BY completed ASC, created_at DESC LIMIT 100",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "description": row.get::<_, String>(1)?,
+                "completed": row.get::<_, bool>(2)?,
+                "priority": row.get::<_, String>(3)?,
+                "conversation_id": row.get::<_, Option<String>>(4)?,
+                "created_at": row.get::<_, String>(5)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(serde_json::json!(rows))
+}
+
+#[tauri::command]
+fn toggle_action_item(
+    id: String,
+    completed: bool,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE action_items SET completed = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![completed, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok("Updated".to_string())
+}
+
 /// Check if the whisper model is downloaded
 #[tauri::command]
 fn has_whisper_model() -> bool {
@@ -256,6 +356,10 @@ pub fn run() {
             has_whisper_model,
             check_llm_status,
             process_conversation_cmd,
+            get_conversations,
+            get_memories,
+            get_action_items,
+            toggle_action_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
