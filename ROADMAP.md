@@ -19,12 +19,13 @@ An always-on AI assistant for Linux that sees your screen, hears your conversati
 
 ## Phase 2: Audio Capture + Local Transcription
 
-- [ ] PipeWire/PulseAudio mic capture in Rust (16kHz mono PCM)
-- [ ] Integrate Silero VAD (ONNX) for voice activity detection
-- [ ] Integrate faster-whisper (Python sidecar) or whisper.cpp (native) for local STT
-- [ ] Buffer speech segments between VAD boundaries, transcribe each chunk
-- [ ] Store transcript segments in SQLite with timestamps
-- [ ] Basic live transcription view in React UI
+- [x] PipeWire/PulseAudio mic capture in Rust via cpal (auto-resample to 16kHz mono)
+- [x] Integrate Silero VAD (voice_activity_detector crate, bundled ONNX model)
+- [x] Integrate whisper.cpp (whisper-rs crate) for local STT — auto-downloads ggml-base.en model
+- [x] Buffer speech segments between VAD boundaries (~480ms silence = end of speech)
+- [x] Store transcript segments in SQLite with timestamps
+- [x] Frontend recording controls (FAB toggle, listening indicator, audio level)
+- [ ] Live transcription view in React UI (showing segments as they come in)
 - [ ] System audio capture via PipeWire monitor source
 
 ---

@@ -4,7 +4,11 @@ import {
   stopRecording,
   getAudioLevel,
   isRecording as checkRecording,
+  initTranscriber,
+  transcribePending,
+  hasWhisperModel,
 } from "../lib/tauri";
+import type { TranscriptSegment } from "../lib/tauri";
 
 const mockConversations = [
   { id: "1", icon: "build", title: "Omniscient Architecture Sync", overview: "Discussed memory indexing latency improvements and ambient listening protocols", time: "3h ago", tag: "work" },
@@ -22,11 +26,16 @@ function getGreeting(): string {
 export function ConversationsPage() {
   const [recording, setRecording] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [modelReady, setModelReady] = useState(false);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState<TranscriptSegment[]>([]);
   const levelInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcribeInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Check initial recording state
+  // Check initial state
   useEffect(() => {
     checkRecording().then(setRecording).catch(() => {});
+    hasWhisperModel().then(setModelReady).catch(() => {});
   }, []);
 
   // Poll audio level while recording
@@ -34,30 +43,55 @@ export function ConversationsPage() {
     if (recording) {
       levelInterval.current = setInterval(async () => {
         try {
-          const level = await getAudioLevel();
-          setAudioLevel(level);
-        } catch {
-          // ignore
-        }
+          setAudioLevel(await getAudioLevel());
+        } catch { /* ignore */ }
       }, 100);
+
+      // Poll for transcription results every 2s
+      transcribeInterval.current = setInterval(async () => {
+        try {
+          const segments = await transcribePending();
+          if (segments.length > 0) {
+            setLiveTranscript((prev) => [...prev, ...segments]);
+          }
+        } catch { /* ignore */ }
+      }, 2000);
     } else {
-      if (levelInterval.current) {
-        clearInterval(levelInterval.current);
-        levelInterval.current = null;
-      }
+      if (levelInterval.current) clearInterval(levelInterval.current);
+      if (transcribeInterval.current) clearInterval(transcribeInterval.current);
+      levelInterval.current = null;
+      transcribeInterval.current = null;
       setAudioLevel(0);
     }
     return () => {
       if (levelInterval.current) clearInterval(levelInterval.current);
+      if (transcribeInterval.current) clearInterval(transcribeInterval.current);
     };
   }, [recording]);
 
+  async function handleInitModel() {
+    setModelLoading(true);
+    try {
+      await initTranscriber();
+      setModelReady(true);
+    } catch (err) {
+      console.error("Failed to init transcriber:", err);
+    }
+    setModelLoading(false);
+  }
+
   async function toggleRecording() {
+    if (!modelReady) {
+      await handleInitModel();
+    }
     try {
       if (recording) {
         await stopRecording();
         setRecording(false);
       } else {
+        if (!modelReady) {
+          await handleInitModel();
+        }
         await startRecording();
         setRecording(true);
       }
@@ -78,13 +112,52 @@ export function ConversationsPage() {
             <div className="recording-pill">
               <span className="recording-dot" />
               Listening
-              <span style={{ marginLeft: 4, opacity: 0.6 }}>
-                {audioLevel > 0 && `${audioLevel}%`}
-              </span>
+              {audioLevel > 0 && (
+                <span style={{ marginLeft: 4, opacity: 0.6 }}>{audioLevel}%</span>
+              )}
             </div>
+          )}
+          {!modelReady && !recording && (
+            <button
+              onClick={handleInitModel}
+              disabled={modelLoading}
+              style={{
+                background: "var(--bg-card)",
+                border: "1px solid var(--bg-card-border)",
+                color: "var(--text-2)",
+                padding: "6px 14px",
+                borderRadius: "8px",
+                fontSize: "12px",
+                cursor: modelLoading ? "wait" : "pointer",
+              }}
+            >
+              {modelLoading ? "Downloading model..." : "Setup Whisper Model"}
+            </button>
           )}
         </div>
       </div>
+
+      {/* Live transcript (shown when recording or has content) */}
+      {liveTranscript.length > 0 && (
+        <div style={{
+          marginBottom: "32px",
+          padding: "16px 20px",
+          borderRadius: "12px",
+          background: "var(--bg-card)",
+          border: "1px solid var(--bg-card-border)",
+          maxHeight: "200px",
+          overflowY: "auto",
+        }}>
+          <div style={{ fontSize: "11px", color: "var(--text-4)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>
+            Live Transcript
+          </div>
+          {liveTranscript.map((seg, i) => (
+            <p key={i} style={{ fontSize: "13px", color: "var(--text-1)", marginBottom: "4px", lineHeight: 1.5 }}>
+              {seg.text}
+            </p>
+          ))}
+        </div>
+      )}
 
       <div className="stats-row">
         <div className="stat-item">
@@ -137,24 +210,16 @@ export function ConversationsPage() {
         </div>
       </div>
 
-      {/* Audio level visualizer when recording */}
+      {/* Audio level bar */}
       {recording && (
         <div style={{
-          position: "fixed",
-          bottom: 84,
-          right: 24,
-          width: 48,
-          height: 4,
-          borderRadius: 2,
-          background: "rgba(255,255,255,0.06)",
-          overflow: "hidden",
+          position: "fixed", bottom: 84, right: 24,
+          width: 48, height: 4, borderRadius: 2,
+          background: "rgba(255,255,255,0.06)", overflow: "hidden",
         }}>
           <div style={{
-            width: `${audioLevel}%`,
-            height: "100%",
-            borderRadius: 2,
-            background: "var(--green)",
-            transition: "width 0.1s ease",
+            width: `${audioLevel}%`, height: "100%", borderRadius: 2,
+            background: "var(--green)", transition: "width 0.1s ease",
           }} />
         </div>
       )}
