@@ -154,8 +154,8 @@ export function SettingsPage() {
         <Row label="Voice activity sensitivity" value="Medium" />
         <Row
           label="Transcription model"
-          value="Whisper base.en"
-          hint="~140MB · downloads on first use"
+          value="Whisper Large-v3-Turbo"
+          hint="~1.5GB · distilled large model, 6× faster · downloads on first use"
         />
       </section>
 

@@ -95,12 +95,14 @@ pub fn models_dir() -> PathBuf {
     data_dir.join("models")
 }
 
-/// Get the path to the default whisper model
+/// Get the path to the default whisper model.
+/// Using Large-v3-Turbo (1.5GB) — distilled from large-v3, ~6x faster but
+/// matches large-v2 accuracy. Best balance of accuracy and speed for our use case.
 pub fn default_model_path() -> PathBuf {
-    models_dir().join("ggml-base.en.bin")
+    models_dir().join("ggml-large-v3-turbo.bin")
 }
 
-/// Download the whisper base.en model if not present (async, non-blocking)
+/// Download the whisper large-v3-turbo model if not present (async, non-blocking)
 pub async fn ensure_model() -> Result<PathBuf, String> {
     let path = default_model_path();
     if path.exists() {
@@ -112,7 +114,7 @@ pub async fn ensure_model() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create models dir: {}", e))?;
 
-    let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
+    let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
     log::info!("Downloading whisper model from {}...", url);
 
     let resp = reqwest::get(url)
