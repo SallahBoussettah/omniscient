@@ -2,6 +2,7 @@ mod audio;
 mod db;
 
 use audio::capture::SpeechBuffer;
+use audio::transcribe::{self, TranscriptSegment, Transcriber};
 use audio::vad::Vad;
 use audio::AudioState;
 use cpal::Stream;
@@ -12,6 +13,11 @@ use std::sync::{Arc, Mutex};
 struct StreamHolder(Mutex<Option<Stream>>);
 unsafe impl Send for StreamHolder {}
 unsafe impl Sync for StreamHolder {}
+
+/// Wrapper for Transcriber (not Send by default due to whisper internals)
+struct TranscriberHolder(Mutex<Option<Transcriber>>);
+unsafe impl Send for TranscriberHolder {}
+unsafe impl Sync for TranscriberHolder {}
 
 #[tauri::command]
 fn get_db_stats(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
@@ -87,19 +93,81 @@ fn is_recording(audio_state: tauri::State<'_, Arc<AudioState>>) -> bool {
     audio_state.is_recording()
 }
 
+/// Download the whisper model if needed, then initialize the transcriber
 #[tauri::command]
-fn get_speech_segments(
+fn init_transcriber(
+    transcriber: tauri::State<'_, TranscriberHolder>,
+) -> Result<String, String> {
+    let model_path = transcribe::ensure_model()?;
+    let t = Transcriber::new(&model_path)?;
+
+    let mut holder = transcriber.0.lock().map_err(|e| e.to_string())?;
+    *holder = Some(t);
+
+    Ok(format!("Transcriber ready (model: {:?})", model_path))
+}
+
+/// Drain speech segments from the buffer and transcribe them
+#[tauri::command]
+fn transcribe_pending(
     speech_buf: tauri::State<'_, Arc<Mutex<SpeechBuffer>>>,
-) -> Result<usize, String> {
-    let mut buf = speech_buf.lock().map_err(|e| e.to_string())?;
-    let segments = buf.take_segments();
-    let count = segments.len();
-    // For now just log them — transcription will process them later
-    for (i, seg) in segments.iter().enumerate() {
-        let duration = seg.len() as f32 / 16000.0;
-        log::info!("Segment {}: {:.1}s", i, duration);
+    transcriber: tauri::State<'_, TranscriberHolder>,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<Vec<TranscriptSegment>, String> {
+    let segments = {
+        let mut buf = speech_buf.lock().map_err(|e| e.to_string())?;
+        buf.take_segments()
+    };
+
+    if segments.is_empty() {
+        return Ok(vec![]);
     }
-    Ok(count)
+
+    let t_guard = transcriber.0.lock().map_err(|e| e.to_string())?;
+    let t = t_guard
+        .as_ref()
+        .ok_or("Transcriber not initialized. Call init_transcriber first.")?;
+
+    let mut all_results = Vec::new();
+
+    for (i, audio) in segments.iter().enumerate() {
+        let duration = audio.len() as f32 / 16000.0;
+        log::info!("Transcribing segment {} ({:.1}s)...", i, duration);
+
+        match t.transcribe(audio) {
+            Ok(results) => {
+                for seg in &results {
+                    log::info!("  [{}-{}ms] {}", seg.start_ms, seg.end_ms, seg.text);
+
+                    // Store in database
+                    let conn = db.conn();
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let _ = conn.execute(
+                        "INSERT INTO transcript_segments (id, conversation_id, text, start_time, end_time)
+                         VALUES (?1, 'live', ?2, ?3, ?4)",
+                        rusqlite::params![
+                            id,
+                            seg.text,
+                            seg.start_ms as f64 / 1000.0,
+                            seg.end_ms as f64 / 1000.0,
+                        ],
+                    );
+                }
+                all_results.extend(results);
+            }
+            Err(e) => {
+                log::error!("Transcription error for segment {}: {}", i, e);
+            }
+        }
+    }
+
+    Ok(all_results)
+}
+
+/// Check if the whisper model is downloaded
+#[tauri::command]
+fn has_whisper_model() -> bool {
+    transcribe::default_model_path().exists()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -108,12 +176,11 @@ pub fn run() {
     let database = Arc::new(Database::open(&db_path).expect("failed to open database"));
     let audio_state = Arc::new(AudioState::new());
     let stream_holder = StreamHolder(Mutex::new(None));
+    let transcriber_holder = TranscriberHolder(Mutex::new(None));
 
-    // Initialize VAD
     let vad = Arc::new(Mutex::new(
         Vad::new().expect("failed to initialize Silero VAD"),
     ));
-
     let speech_buffer = Arc::new(Mutex::new(SpeechBuffer::new()));
 
     tauri::Builder::default()
@@ -130,6 +197,7 @@ pub fn run() {
         .manage(database)
         .manage(audio_state)
         .manage(stream_holder)
+        .manage(transcriber_holder)
         .manage(vad)
         .manage(speech_buffer)
         .invoke_handler(tauri::generate_handler![
@@ -139,7 +207,9 @@ pub fn run() {
             stop_recording,
             get_audio_level,
             is_recording,
-            get_speech_segments,
+            init_transcriber,
+            transcribe_pending,
+            has_whisper_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

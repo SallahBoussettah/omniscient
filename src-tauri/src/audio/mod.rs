@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod transcribe;
 pub mod vad;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

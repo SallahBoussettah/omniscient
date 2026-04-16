@@ -28,3 +28,21 @@ export async function getDbStats(): Promise<{
 }> {
   return invoke("get_db_stats");
 }
+
+export async function hasWhisperModel(): Promise<boolean> {
+  return invoke("has_whisper_model");
+}
+
+export async function initTranscriber(): Promise<string> {
+  return invoke("init_transcriber");
+}
+
+export interface TranscriptSegment {
+  text: string;
+  start_ms: number;
+  end_ms: number;
+}
+
+export async function transcribePending(): Promise<TranscriptSegment[]> {
+  return invoke("transcribe_pending");
+}
