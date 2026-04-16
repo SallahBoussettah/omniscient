@@ -182,6 +182,21 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             content_rowid='rowid'
         );
 
+        -- Embeddings for RAG. Vector stored as BLOB (f32 little-endian).
+        -- entity_type: 'memory' | 'conversation' | 'segment'
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(entity_type, entity_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
+
         -- Indexes
         CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
         CREATE INDEX IF NOT EXISTS idx_conversations_started ON conversations(started_at);

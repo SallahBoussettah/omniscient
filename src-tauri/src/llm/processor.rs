@@ -1,5 +1,7 @@
 use super::client::LlmClient;
+use super::embed::Embedder;
 use super::prompts;
+use super::rag;
 use crate::db::Database;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -43,6 +45,10 @@ pub async fn process_conversation(
         transcript.len()
     );
 
+    let embedder = Embedder::new();
+    let mut conv_overview_for_embed: Option<String> = None;
+    let mut conv_title_for_embed: Option<String> = None;
+
     // Extract structure
     match extract_structure(client, transcript).await {
         Ok(structured) => {
@@ -59,6 +65,8 @@ pub async fn process_conversation(
                 ],
             );
             log::info!("Structure: {} {}", structured.emoji, structured.title);
+            conv_title_for_embed = Some(structured.title.clone());
+            conv_overview_for_embed = Some(structured.overview.clone());
         }
         Err(e) => log::error!("Structure extraction failed: {}", e),
     }
@@ -89,7 +97,8 @@ pub async fn process_conversation(
         Err(e) => log::error!("Action item extraction failed: {}", e),
     }
 
-    // Extract memories
+    // Extract memories — and embed each one
+    let mut memory_records: Vec<(String, String)> = Vec::new();
     match extract_memories(client, transcript).await {
         Ok(memories) => {
             let conn = db.conn();
@@ -100,10 +109,26 @@ pub async fn process_conversation(
                      VALUES (?1, ?2, ?3, ?4)",
                     rusqlite::params![id, mem.content, mem.category, conversation_id],
                 );
+                memory_records.push((id, mem.content.clone()));
             }
             log::info!("Extracted {} memories", memories.len());
         }
         Err(e) => log::error!("Memory extraction failed: {}", e),
+    }
+
+    // Generate embeddings for RAG search.
+    // Failures here are non-fatal — chat just won't have context for these items.
+    if let (Some(title), Some(overview)) = (conv_title_for_embed, conv_overview_for_embed) {
+        let combined = format!("{}\n{}", title, overview);
+        if let Err(e) = rag::store_embedding(&embedder, db, "conversation", conversation_id, &combined).await {
+            log::warn!("Failed to embed conversation overview: {}", e);
+        }
+    }
+
+    for (mem_id, content) in &memory_records {
+        if let Err(e) = rag::store_embedding(&embedder, db, "memory", mem_id, content).await {
+            log::warn!("Failed to embed memory {}: {}", mem_id, e);
+        }
     }
 
     Ok(())

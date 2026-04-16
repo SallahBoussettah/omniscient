@@ -8,7 +8,9 @@ use audio::vad::Vad;
 use audio::AudioState;
 use cpal::Stream;
 use db::Database;
-use llm::client::LlmClient;
+use llm::client::{ChatMessage, LlmClient};
+use llm::embed::Embedder;
+use llm::rag::{self, SearchHit};
 use std::sync::{Arc, Mutex};
 
 /// Wrapper to make cpal::Stream usable in Tauri state (Send + Sync)
@@ -439,6 +441,176 @@ async fn reprocess_conversation(
     Ok(format!("Reprocessed {}", conversation_id))
 }
 
+// =====================================================
+// CHAT (RAG)
+// =====================================================
+
+#[derive(serde::Serialize)]
+struct ChatTurnResult {
+    answer: String,
+    sources: Vec<SearchHit>,
+    session_id: String,
+    user_message_id: String,
+    assistant_message_id: String,
+}
+
+#[tauri::command]
+async fn chat_send(
+    message: String,
+    session_id: Option<String>,
+    llm: tauri::State<'_, Arc<LlmClient>>,
+    embedder: tauri::State<'_, Arc<Embedder>>,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<ChatTurnResult, String> {
+    if message.trim().is_empty() {
+        return Err("Empty message".to_string());
+    }
+
+    // Resolve or create session
+    let session_id = match session_id {
+        Some(s) => s,
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO chat_sessions (id, title) VALUES (?1, ?2)",
+                rusqlite::params![id, &message.chars().take(60).collect::<String>()],
+            )
+            .map_err(|e| e.to_string())?;
+            id
+        }
+    };
+
+    // Load history (excluding the new message we're about to add)
+    let history: Vec<ChatMessage> = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT sender, text FROM messages WHERE session_id = ?1 ORDER BY created_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let iter = stmt
+            .query_map([&session_id], |row| {
+                Ok(ChatMessage {
+                    role: match row.get::<_, String>(0)?.as_str() {
+                        "user" => "user".to_string(),
+                        _ => "assistant".to_string(),
+                    },
+                    content: row.get::<_, String>(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        iter.filter_map(|r| r.ok()).collect()
+    };
+
+    // Persist user message
+    let user_msg_id = uuid::Uuid::new_v4().to_string();
+    {
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO messages (id, session_id, text, sender) VALUES (?1, ?2, ?3, 'user')",
+            rusqlite::params![user_msg_id, session_id, message],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Run RAG chat
+    let (answer, sources) = rag::chat_with_context(&llm, &embedder, &db.inner().clone(), &history, &message).await?;
+
+    // Persist assistant message
+    let asst_msg_id = uuid::Uuid::new_v4().to_string();
+    {
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO messages (id, session_id, text, sender) VALUES (?1, ?2, ?3, 'assistant')",
+            rusqlite::params![asst_msg_id, session_id, answer],
+        )
+        .map_err(|e| e.to_string())?;
+        // Bump session updated_at
+        let _ = conn.execute(
+            "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?1",
+            [&session_id],
+        );
+    }
+
+    Ok(ChatTurnResult {
+        answer: {
+            // We just inserted the assistant message; pull it back to ensure consistency
+            let conn = db.conn();
+            conn.query_row(
+                "SELECT text FROM messages WHERE id = ?1",
+                [&asst_msg_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_default()
+        },
+        sources,
+        session_id,
+        user_message_id: user_msg_id,
+        assistant_message_id: asst_msg_id,
+    })
+}
+
+#[tauri::command]
+fn list_chat_sessions(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "title": row.get::<_, Option<String>>(1)?,
+                "updated_at": row.get::<_, String>(2)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(serde_json::json!(rows))
+}
+
+#[tauri::command]
+fn get_chat_messages(
+    session_id: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, sender, text, created_at FROM messages
+             WHERE session_id = ?1 ORDER BY created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map([&session_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "sender": row.get::<_, String>(1)?,
+                "text": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(serde_json::json!(rows))
+}
+
+#[tauri::command]
+fn delete_chat_session(
+    session_id: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    let conn = db.conn();
+    conn.execute("DELETE FROM chat_sessions WHERE id = ?1", [&session_id])
+        .map_err(|e| e.to_string())?;
+    Ok("Deleted".to_string())
+}
+
 #[tauri::command]
 fn delete_conversation(
     id: String,
@@ -583,6 +755,8 @@ pub fn run() {
     // Tracks the currently active conversation_id while recording
     let current_conversation: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+    let embedder = Arc::new(Embedder::new());
+
     tauri::Builder::default()
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -602,6 +776,7 @@ pub fn run() {
         .manage(speech_buffer)
         .manage(llm_client)
         .manage(current_conversation)
+        .manage(embedder)
         .invoke_handler(tauri::generate_handler![
             get_db_stats,
             list_audio_devices,
@@ -624,6 +799,10 @@ pub fn run() {
             get_memories,
             get_action_items,
             toggle_action_item,
+            chat_send,
+            list_chat_sessions,
+            get_chat_messages,
+            delete_chat_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

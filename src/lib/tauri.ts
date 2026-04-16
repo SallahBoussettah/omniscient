@@ -108,6 +108,56 @@ export async function getConversationDetail(id: string): Promise<ConversationDet
   return invoke("get_conversation_detail", { id });
 }
 
+// ===== CHAT (RAG) =====
+
+export interface SearchHit {
+  entity_type: string;
+  entity_id: string;
+  text: string;
+  score: number;
+  created_at: string;
+}
+
+export interface ChatTurnResult {
+  answer: string;
+  sources: SearchHit[];
+  session_id: string;
+  user_message_id: string;
+  assistant_message_id: string;
+}
+
+export async function chatSend(
+  message: string,
+  sessionId: string | null
+): Promise<ChatTurnResult> {
+  return invoke("chat_send", { message, sessionId });
+}
+
+export interface ChatSession {
+  id: string;
+  title: string | null;
+  updated_at: string;
+}
+
+export async function listChatSessions(): Promise<ChatSession[]> {
+  return invoke("list_chat_sessions");
+}
+
+export interface ChatMessage {
+  id: string;
+  sender: "user" | "assistant";
+  text: string;
+  created_at: string;
+}
+
+export async function getChatMessages(sessionId: string): Promise<ChatMessage[]> {
+  return invoke("get_chat_messages", { sessionId });
+}
+
+export async function deleteChatSession(sessionId: string): Promise<string> {
+  return invoke("delete_chat_session", { sessionId });
+}
+
 export interface Conversation {
   id: string;
   title: string | null;
