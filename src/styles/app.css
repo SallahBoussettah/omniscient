@@ -851,9 +851,22 @@ body {
 
 /* ============================
    FLOATING BAR
-   Compact pill that expands on hover into a chat input + push-to-talk.
-   Lives in its own always-on-top transparent window.
    ============================ */
+
+/* When this window is the floating bar, kill the default opaque body bg
+   so our styled .fb-root is the only thing visible. */
+html.floating-host,
+body.floating-host {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+html.floating-host #root {
+  background: transparent;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
 
 .fb-root {
   width: 100vw;
@@ -867,48 +880,38 @@ body {
   user-select: none;
 }
 
-/* Compact: small white pill, draggable */
+/* Compact mode: only the small pill is visible — the rest of the window
+   stays transparent so the user only sees the pill on their desktop. */
 .fb-pill {
   width: 40px;
   height: 4px;
   border-radius: 999px;
-  background: oklch(0.92 0.005 80 / 0.5);
-  transition: background var(--dur-quick) var(--ease-out);
+  background: oklch(0.85 0.01 80 / 0.7);
+  transition: all var(--dur-quick) var(--ease-out);
   cursor: grab;
+  box-shadow: 0 1px 4px oklch(0 0 0 / 0.4);
 }
 
 .fb-root:hover .fb-pill {
-  background: oklch(0.92 0.005 80 / 0.8);
+  background: oklch(0.95 0.005 80 / 0.95);
+  width: 48px;
 }
 
-/* Expanded shell — full window with bar UI */
-.fb-expanded {
+/* Expanded shell — the visible styled box IS the .fb-root */
+.fb-root.fb-expanded {
   align-items: stretch;
-  padding: 6px;
-}
-
-.fb-expanded > * + * {
-  margin-top: 6px;
-}
-
-.fb-expanded::before {
-  content: "";
-  position: absolute;
-  inset: 6px;
+  background: oklch(0.13 0.005 60 / 0.96);
+  border: 1px solid oklch(0.30 0.008 60 / 0.6);
   border-radius: 14px;
-  background: oklch(0.13 0.005 60 / 0.92);
-  border: 1px solid oklch(0.30 0.008 60 / 0.5);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  z-index: -1;
-}
-
-.fb-expanded {
-  position: relative;
+  padding: 8px 10px 8px;
   display: flex;
   flex-direction: column;
-  padding: 10px 12px 8px;
   gap: 8px;
+  position: relative;
+  box-shadow:
+    0 8px 32px oklch(0 0 0 / 0.5),
+    0 2px 8px oklch(0 0 0 / 0.3);
+  /* No backdrop-filter: causes flicker/black artifacts during window moves on KWin */
 }
 
 /* Drag area along the top */
