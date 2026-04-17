@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { Page } from "../App";
 import { isRecording as checkRecording, getAudioLevel } from "../lib/tauri";
+import lumiMark from "../assets/lumi-mark.png";
 
 interface NavItem {
   id: Page;
@@ -68,7 +69,11 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
   return (
     <nav className="sidebar">
       <div className="sidebar-brand">
-        <div className="sidebar-brand-mark">O</div>
+        <img
+          src={lumiMark}
+          alt=""
+          className="sidebar-brand-mark sidebar-brand-mark--image"
+        />
         <span className="sidebar-brand-name">Lumi</span>
       </div>
 

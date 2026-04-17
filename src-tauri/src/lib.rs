@@ -1619,6 +1619,19 @@ pub fn run() {
                 )?;
             }
 
+            // Close-to-tray: clicking X hides the main window instead of
+            // quitting so the tray icon's "Open Main Window" still works.
+            // Real quit is the tray menu's "Quit Lumi".
+            if let Some(main_win) = app.get_webview_window("main") {
+                let win_for_event = main_win.clone();
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win_for_event.hide();
+                    }
+                });
+            }
+
             // Build a tray context menu — most Linux desktops (incl. KDE)
             // route both clicks through the menu rather than firing raw events.
             let toggle_bar =

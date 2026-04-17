@@ -129,6 +129,16 @@ body {
   letter-spacing: -0.04em;
 }
 
+.sidebar-brand-mark--image {
+  background: transparent;
+  object-fit: contain;
+  /* Slight upscale so the orb fills the badge optically — the source has
+   * a bit of padding inside the squircle. */
+  width: 28px;
+  height: 28px;
+  margin: -1px;
+}
+
 .sidebar-brand-name {
   font-family: var(--font-display);
   font-size: 17px;
