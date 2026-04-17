@@ -46,6 +46,15 @@ impl Transcriber {
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
+        // Vocabulary bias — Whisper conditions on this text as if it were
+        // the previous segment, nudging the decoder toward these words for
+        // ambiguous audio. Otherwise it tends to produce the most-likely
+        // dictionary word ("Tory box" instead of "Tauri docs").
+        params.set_initial_prompt(
+            "Lumi, Tauri, JavaScript, TypeScript, React, Rust, Python, GitHub, \
+             Linux, Wayland, KDE, Plasma, Ollama, Whisper, Kokoro, qwen, \
+             nomic-embed-text, Salah, Boussettah, Marcus, Hisab, ROCm, RDNA.",
+        );
         // Single segment mode for short utterances
         params.set_single_segment(samples.len() < 16000 * 10); // < 10 seconds
 
@@ -99,8 +108,28 @@ pub fn default_model_path() -> PathBuf {
     models_dir().join("ggml-large-v3-turbo.bin")
 }
 
-/// Download the whisper large-v3-turbo model if not present (async, non-blocking)
-pub async fn ensure_model() -> Result<PathBuf, String> {
+/// Process-wide guard: only one model download in flight at a time. Without
+/// this, a user re-clicking "Set up listening" while a download is already
+/// running spawns a second stream that writes to the same `.part` file and
+/// the progress counter visibly thrashes. The lock is held for the whole
+/// download — second callers wait, then see the model already exists and
+/// return immediately.
+static DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Download the whisper large-v3-turbo model if not present.
+///
+/// Streams chunks to disk so the 1.5GB model doesn't sit in memory, and
+/// invokes `on_progress(downloaded_bytes, total_bytes_or_zero)` after each
+/// chunk so the caller can emit UI events. `total_bytes` is 0 if the
+/// server didn't send a Content-Length header.
+pub async fn ensure_model<F>(mut on_progress: F) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    // Block any concurrent downloads; second-callers re-check existence below
+    // and bail immediately if the first download finished while they waited.
+    let _guard = DOWNLOAD_LOCK.lock().await;
+
     let path = default_model_path();
     if path.exists() {
         log::info!("Whisper model already exists at {:?}", path);
@@ -121,16 +150,34 @@ pub async fn ensure_model() -> Result<PathBuf, String> {
         return Err(format!("Download failed with status: {}", resp.status()));
     }
 
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read model bytes: {}", e))?;
+    let total = resp.content_length().unwrap_or(0);
 
-    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write model file: {}", e))?;
+    // Write to a `.part` file first; rename on success so a partial file
+    // never appears valid to a future startup check.
+    let tmp = path.with_extension("bin.part");
+    use std::io::Write;
+    use futures_util::StreamExt;
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|e| format!("Failed to create model file: {}", e))?;
+
+    let mut downloaded: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    on_progress(0, total);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("Write error: {}", e))?;
+        downloaded += chunk.len() as u64;
+        on_progress(downloaded, total);
+    }
+    drop(file);
+
+    std::fs::rename(&tmp, &path)
+        .map_err(|e| format!("Failed to finalize model file: {}", e))?;
 
     log::info!(
         "Whisper model downloaded ({} MB)",
-        bytes.len() / 1024 / 1024
+        downloaded / 1024 / 1024
     );
     Ok(path)
 }

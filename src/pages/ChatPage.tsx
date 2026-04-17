@@ -11,15 +11,24 @@ import {
   reindexEmbeddings,
   ttsSpeak,
   getTtsVoice,
+  startRecording,
+  cancelRecording,
+  hasWhisperModel,
+  initTranscriber,
+  transcribePending,
+  transcribePartial,
+  getRecordingStatus,
 } from "../lib/tauri";
 import type {
   ChatMessage as ChatMsg,
   ChatSession,
   ChatTokenEvent,
   SearchHit,
+  TranscriptSegment,
+  WordTiming,
 } from "../lib/tauri";
 import { TtsPlayer } from "../lib/ttsPlayer";
-import { VoiceMode } from "../components/VoiceMode";
+import { SentenceBatcher, cleanForTts } from "../lib/sentenceBatch";
 
 interface DisplayMessage {
   id: string;
@@ -28,10 +37,19 @@ interface DisplayMessage {
   sources?: SearchHit[];
 }
 
+interface ResponseChunk {
+  text: string;
+  duration_ms: number;
+  words: WordTiming[];
+}
+
 interface ChatPageProps {
   initialSessionId?: string | null;
   onSessionConsumed?: () => void;
 }
+
+const VOICE_SILENCE_THRESHOLD_MS = 1500;
+const VOICE_MIN_RECORDING_MS = 600;
 
 export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps = {}) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -44,10 +62,41 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const ttsRef = useRef<TtsPlayer | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const ttsVoiceRef = useRef<string>("af_heart");
+
+  // ---------- VOICE MODE STATE ----------
+  // voiceMode: master toggle. When ON, mic auto-arms, responses speak via
+  // Kokoro, and the mic re-arms after each response. When OFF: text chat only.
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceAudioLevel, setVoiceAudioLevel] = useState(0);
+  // Karaoke state for the assistant message currently being voiced.
+  const [voiceStreamingId, setVoiceStreamingId] = useState<string | null>(null);
+  const [voiceChunks, setVoiceChunks] = useState<ResponseChunk[]>([]);
+  const [voiceClipIndex, setVoiceClipIndex] = useState(-1);
+  const [voiceMsInClip, setVoiceMsInClip] = useState(0);
+
+  const voiceModeRef = useRef(false);
+  const voiceListeningRef = useRef(false);
+  const voiceTranscriptBufRef = useRef("");
+  const voicePartialBusyRef = useRef(false);
+  const voicePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const voicePartialPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const voiceRearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceEnqueueChainRef = useRef<Promise<void>>(Promise.resolve());
+  const voiceStreamingIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    voiceModeRef.current = voiceMode;
+  }, [voiceMode]);
+  useEffect(() => {
+    voiceListeningRef.current = voiceListening;
+  }, [voiceListening]);
+  useEffect(() => {
+    voiceStreamingIdRef.current = voiceStreamingId;
+  }, [voiceStreamingId]);
 
   function getTts(): TtsPlayer {
     if (!ttsRef.current) ttsRef.current = new TtsPlayer();
@@ -66,7 +115,6 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
     try {
       const clip = await ttsSpeak(text, ttsVoiceRef.current);
       await tts.enqueue(clip);
-      // Auto-clear when done.
       const unsub = tts.subscribe((s) => {
         if (!s.playing) {
           setSpeakingId((cur) => (cur === id ? null : cur));
@@ -78,6 +126,232 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
       setSpeakingId(null);
     }
   }
+
+  // ---------- VOICE MODE: LISTEN/STOP ----------
+
+  const startVoiceListening = useCallback(async () => {
+    if (voiceRearmTimerRef.current) {
+      clearTimeout(voiceRearmTimerRef.current);
+      voiceRearmTimerRef.current = null;
+    }
+    voiceTranscriptBufRef.current = "";
+    setInput("");
+    try {
+      await cancelRecording();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const ready = await hasWhisperModel();
+      if (!ready) await initTranscriber();
+      await startRecording();
+      setVoiceListening(true);
+      // Focus input so the user can edit immediately when transcription
+      // populates without an extra click.
+      inputRef.current?.focus();
+    } catch (e) {
+      console.error("Voice: start recording failed", e);
+      setVoiceMode(false);
+      setVoiceListening(false);
+    }
+  }, []);
+
+  const stopVoiceListening = useCallback(async () => {
+    try {
+      await cancelRecording();
+    } catch {
+      /* ignore */
+    }
+    setVoiceListening(false);
+    setVoiceAudioLevel(0);
+  }, []);
+
+  async function toggleVoiceMode() {
+    if (voiceMode) {
+      // Turning off: stop listening + cancel any pending re-arm + stop TTS.
+      voiceModeRef.current = false;
+      setVoiceMode(false);
+      if (voiceRearmTimerRef.current) {
+        clearTimeout(voiceRearmTimerRef.current);
+        voiceRearmTimerRef.current = null;
+      }
+      if (voiceListening) await stopVoiceListening();
+      ttsRef.current?.stop();
+      setVoiceStreamingId(null);
+      setVoiceChunks([]);
+    } else {
+      voiceModeRef.current = true;
+      setVoiceMode(true);
+      await startVoiceListening();
+    }
+  }
+
+  async function handleVoiceSilenceStop() {
+    // Drain any final segments before stopping.
+    try {
+      const segs = await transcribePending();
+      if (segs.length > 0) {
+        const newText = segs.map((s: TranscriptSegment) => s.text).join(" ");
+        voiceTranscriptBufRef.current = (
+          voiceTranscriptBufRef.current
+            ? voiceTranscriptBufRef.current + " " + newText
+            : newText
+        ).trim();
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      await cancelRecording();
+    } catch {
+      /* ignore */
+    }
+    setVoiceListening(false);
+    setVoiceAudioLevel(0);
+    // Pre-fill input for the user to edit/send. Do NOT auto-send — user
+    // wants the chance to fix Whisper mistakes manually.
+    setInput(voiceTranscriptBufRef.current);
+  }
+
+  // ---------- VOICE MODE: POLLS ----------
+
+  // Fast poll — finalized VAD segments + silence detection.
+  useEffect(() => {
+    if (!voiceListening) {
+      if (voicePollRef.current) clearInterval(voicePollRef.current);
+      voicePollRef.current = null;
+      return;
+    }
+
+    voicePollRef.current = setInterval(async () => {
+      if (!voiceListeningRef.current) return;
+      try {
+        const status = await getRecordingStatus();
+        setVoiceAudioLevel(status.audio_level);
+
+        const segs = await transcribePending();
+        if (segs.length > 0) {
+          const newText = segs.map((s: TranscriptSegment) => s.text).join(" ");
+          voiceTranscriptBufRef.current = (
+            voiceTranscriptBufRef.current
+              ? voiceTranscriptBufRef.current + " " + newText
+              : newText
+          ).trim();
+          setInput(voiceTranscriptBufRef.current);
+        }
+
+        const haveSpeech = voiceTranscriptBufRef.current.trim().length > 0;
+        if (
+          haveSpeech &&
+          status.silence_ms > VOICE_SILENCE_THRESHOLD_MS &&
+          status.recording_ms > VOICE_MIN_RECORDING_MS
+        ) {
+          await handleVoiceSilenceStop();
+        }
+      } catch (e) {
+        console.error("Voice fast poll error", e);
+      }
+    }, 400);
+
+    return () => {
+      if (voicePollRef.current) clearInterval(voicePollRef.current);
+      voicePollRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceListening]);
+
+  // Slow poll — partial whisper preview while still speaking.
+  useEffect(() => {
+    if (!voiceListening) {
+      if (voicePartialPollRef.current) clearInterval(voicePartialPollRef.current);
+      voicePartialPollRef.current = null;
+      return;
+    }
+
+    voicePartialPollRef.current = setInterval(async () => {
+      if (!voiceListeningRef.current) return;
+      if (voicePartialBusyRef.current) return;
+      voicePartialBusyRef.current = true;
+      try {
+        const partial = (await transcribePartial()).trim();
+        if (!voiceListeningRef.current) return;
+        const buf = voiceTranscriptBufRef.current.trim();
+        const combined = buf ? (partial ? `${buf} ${partial}` : buf) : partial;
+        setInput(combined);
+      } catch {
+        /* best-effort */
+      } finally {
+        voicePartialBusyRef.current = false;
+      }
+    }, 1200);
+
+    return () => {
+      if (voicePartialPollRef.current) clearInterval(voicePartialPollRef.current);
+      voicePartialPollRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceListening]);
+
+  // ---------- VOICE MODE: TTS PLAYBACK + AUTO-REARM ----------
+
+  // TTS player subscribe — fires on every animation frame while playing.
+  useEffect(() => {
+    const tts = getTts();
+    const unsub = tts.subscribe((s) => {
+      // Only update karaoke state when there's an active voice stream.
+      if (voiceStreamingIdRef.current !== null) {
+        setVoiceClipIndex(s.clipIndex);
+        setVoiceMsInClip(s.msInClip);
+      }
+      // Auto-rearm logic — when speech for a voice turn ends and we're still
+      // in voice mode, restart listening for the next turn.
+      if (
+        !s.playing &&
+        voiceModeRef.current &&
+        voiceStreamingIdRef.current !== null
+      ) {
+        if (voiceRearmTimerRef.current) clearTimeout(voiceRearmTimerRef.current);
+        voiceRearmTimerRef.current = setTimeout(() => {
+          voiceRearmTimerRef.current = null;
+          setVoiceStreamingId(null);
+          setVoiceChunks([]);
+          setVoiceClipIndex(-1);
+          setVoiceMsInClip(0);
+          if (voiceModeRef.current) void startVoiceListening();
+        }, 500);
+      }
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startVoiceListening]);
+
+  // Synthesize one sentence and serialize into the player's queue so audio
+  // plays in sentence order even if HTTP responses arrive out of order.
+  function synthAndQueueChat(text: string) {
+    if (!voiceModeRef.current) return;
+    const clipPromise = ttsSpeak(text, ttsVoiceRef.current);
+    voiceEnqueueChainRef.current = voiceEnqueueChainRef.current.then(async () => {
+      if (!voiceModeRef.current) return;
+      try {
+        const clip = await clipPromise;
+        if (!voiceModeRef.current) return;
+        setVoiceChunks((prev) => [
+          ...prev,
+          {
+            text: clip.text,
+            duration_ms: clip.duration_ms,
+            words: clip.words,
+          },
+        ]);
+        const tts = getTts();
+        await tts.enqueue(clip);
+      } catch (e) {
+        console.error("Voice synth failed", e);
+      }
+    });
+  }
+
+  // ---------- BOOT ----------
 
   const loadSessions = useCallback(async () => {
     try {
@@ -106,7 +380,6 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
       .catch(() => {});
   }, [loadSessions]);
 
-  // If we were navigated here from the floating bar with a session id, open it
   useEffect(() => {
     if (initialSessionId) {
       setActiveSession(initialSessionId);
@@ -128,14 +401,23 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
       .catch(() => {});
   }, [activeSession]);
 
-  // Auto-scroll to bottom
   useEffect(() => {
     if (threadRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
   }, [messages, sending]);
 
-  // Auto-resize textarea
+  // Cleanup on unmount — drop any active recording / TTS.
+  useEffect(() => {
+    return () => {
+      if (voicePollRef.current) clearInterval(voicePollRef.current);
+      if (voicePartialPollRef.current) clearInterval(voicePartialPollRef.current);
+      if (voiceRearmTimerRef.current) clearTimeout(voiceRearmTimerRef.current);
+      ttsRef.current?.stop();
+      cancelRecording().catch(() => {});
+    };
+  }, []);
+
   function resizeInput() {
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
@@ -143,6 +425,8 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
         Math.min(inputRef.current.scrollHeight, 180) + "px";
     }
   }
+
+  // ---------- SEND ----------
 
   async function send() {
     const text = input.trim();
@@ -152,24 +436,48 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
       return;
     }
 
+    // Snapshot whether this turn is a voice turn at send time. If voice mode
+    // turns off mid-stream, the response should still finish naturally with
+    // its TTS output — but we won't re-arm.
+    const wasVoiceTurn = voiceModeRef.current;
+
+    // If we were still listening, stop now so we don't capture our own typing
+    // sounds during synthesis.
+    if (voiceListening) {
+      await stopVoiceListening();
+    }
+
     setSending(true);
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
 
-    // Track whether this is a brand-new session — if so, after the first
-    // turn completes we ask the LLM for a real title.
     const isNewSession = !activeSession;
-
-    // Optimistic user + empty assistant placeholder we stream into
     const tempUserId = `tmp-user-${Date.now()}`;
     const streamingId = `tmp-asst-${Date.now()}`;
+
     setMessages((prev) => [
       ...prev,
       { id: tempUserId, sender: "user", text },
       { id: streamingId, sender: "assistant", text: "" },
     ]);
 
-    const unlisten = await listen<ChatTokenEvent>("chat-token", (e) => {
+    // Voice-turn setup: reset karaoke state, prep TTS queue.
+    if (wasVoiceTurn) {
+      voiceTranscriptBufRef.current = "";
+      const tts = getTts();
+      tts.stop();
+      voiceEnqueueChainRef.current = Promise.resolve();
+      setVoiceStreamingId(streamingId);
+      setVoiceChunks([]);
+      setVoiceClipIndex(-1);
+      setVoiceMsInClip(0);
+    }
+
+    const batcher = wasVoiceTurn
+      ? new SentenceBatcher((sentence) => synthAndQueueChat(sentence))
+      : null;
+
+    const unlistenToken = await listen<ChatTokenEvent>("chat-token", (e) => {
       const delta = e.payload.delta;
       if (!delta) return;
       setMessages((prev) =>
@@ -177,10 +485,30 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
           m.id === streamingId ? { ...m, text: m.text + delta } : m
         )
       );
+      if (batcher) batcher.push(delta);
+    });
+
+    // chat-retry: model lied, reset the displayed bubble + TTS state.
+    const unlistenRetry = await listen("chat-retry", () => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === streamingId ? { ...m, text: "" } : m
+        )
+      );
+      if (batcher) batcher.reset();
+      if (wasVoiceTurn) {
+        const tts = getTts();
+        tts.stop();
+        voiceEnqueueChainRef.current = Promise.resolve();
+        setVoiceChunks([]);
+        setVoiceClipIndex(-1);
+        setVoiceMsInClip(0);
+      }
     });
 
     try {
       const result = await chatSendStream(text, activeSession);
+      if (batcher) batcher.flush();
 
       setMessages((prev) =>
         prev
@@ -196,12 +524,13 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
           ])
       );
 
-      if (!activeSession) {
-        setActiveSession(result.session_id);
+      // Hand karaoke tracking off to the real assistant message id.
+      if (wasVoiceTurn) {
+        setVoiceStreamingId(result.assistant_message_id);
       }
+
+      if (!activeSession) setActiveSession(result.session_id);
       await loadSessions();
-      // Brand-new session: replace the truncated-message default title with
-      // an LLM-generated one. Fire-and-forget so it doesn't block the user.
       if (isNewSession) {
         void autoTitleChatSession(result.session_id)
           .then(() => loadSessions())
@@ -220,8 +549,14 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
             },
           ])
       );
+      // Don't rearm on error.
+      if (wasVoiceTurn) {
+        setVoiceStreamingId(null);
+        setVoiceChunks([]);
+      }
     } finally {
-      unlisten();
+      unlistenToken();
+      unlistenRetry();
       setSending(false);
     }
   }
@@ -266,6 +601,57 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
     setRenamingId(null);
   }
 
+  // ---------- KARAOKE WORD COUNT ----------
+
+  function spokenWordCount(): number {
+    let count = 0;
+    for (let i = 0; i < voiceChunks.length; i++) {
+      if (i < voiceClipIndex) {
+        count += voiceChunks[i].words.length;
+      } else if (i === voiceClipIndex) {
+        for (const w of voiceChunks[i].words) {
+          if (voiceMsInClip >= w.end_ms) count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  function renderBubbleText(message: DisplayMessage): React.ReactNode {
+    const isVoicedMessage =
+      message.sender === "assistant" &&
+      message.id === voiceStreamingId &&
+      voiceChunks.length > 0;
+
+    if (!isVoicedMessage) return message.text;
+
+    const displayWords = cleanForTts(message.text)
+      .split(/\s+/)
+      .filter(Boolean);
+    const spoken = spokenWordCount();
+
+    return displayWords.map((w, i) => (
+      <span
+        key={i}
+        className={i < spoken ? "voice-word voice-word--spoken" : "voice-word"}
+      >
+        {w}
+        {i < displayWords.length - 1 ? " " : ""}
+      </span>
+    ));
+  }
+
+  // ---------- RENDER ----------
+
+  // Mic icon depends on state: idle / mode-on / actively listening.
+  const micIcon = voiceListening ? "mic" : voiceMode ? "mic" : "graphic_eq";
+  const micClass = `chat-voice-btn ${voiceMode ? "active" : ""} ${voiceListening ? "listening" : ""}`;
+  const micTitle = voiceMode
+    ? voiceListening
+      ? "Listening… click to turn voice mode off"
+      : "Voice mode on (click to turn off). Mic re-arms after each reply."
+    : "Voice mode — click to start hands-free chat";
+
   return (
     <>
       <header className="page-header">
@@ -277,14 +663,20 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
             </p>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="filter-pill" onClick={() => { setActiveSession(null); setMessages([]); inputRef.current?.focus(); }}>
+            <button
+              className="filter-pill"
+              onClick={() => {
+                setActiveSession(null);
+                setMessages([]);
+                inputRef.current?.focus();
+              }}
+            >
               + New chat
             </button>
           </div>
         </div>
       </header>
 
-      {/* Session strip */}
       {sessions.length > 0 && (
         <div className="chat-history-strip">
           {sessions.map((s) => {
@@ -363,8 +755,9 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
               </div>
               <p className="empty-voice">What do you want to know?</p>
               <p className="empty-hint">
-                Try asking about a past conversation, a memory, or anything you've mentioned.
-                I'll search through what I've captured and answer based on what I find.
+                Try asking about a past conversation, a memory, or anything
+                you've mentioned. I'll search through what I've captured and
+                answer based on what I find.
               </p>
             </div>
           ) : (
@@ -378,7 +771,7 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
                     </span>
                   </div>
                 ) : (
-                  <div className="chat-bubble">{m.text}</div>
+                  <div className="chat-bubble">{renderBubbleText(m)}</div>
                 )}
                 {m.sources && m.sources.length > 0 && (
                   <div className="chat-sources">
@@ -412,7 +805,16 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
         </div>
 
         <div className="chat-input-bar">
-          <div className="chat-input-row">
+          <div
+            className={`chat-input-row ${voiceListening ? "voice-listening" : ""}`}
+            style={
+              voiceListening
+                ? {
+                    boxShadow: `0 0 0 1px rgba(255, 159, 67, ${0.25 + Math.min(0.5, voiceAudioLevel / 800)})`,
+                  }
+                : undefined
+            }
+          >
             <textarea
               ref={inputRef}
               className="chat-input"
@@ -420,7 +822,11 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
               placeholder={
                 llmReady === false
                   ? "Ollama isn't running — start it to chat"
-                  : "Ask me anything…"
+                  : voiceListening
+                    ? "Listening… speak, then pause"
+                    : voiceMode
+                      ? "Edit if needed, then send"
+                      : "Ask me anything…"
               }
               onChange={(e) => {
                 setInput(e.target.value);
@@ -431,13 +837,13 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
               disabled={sending || llmReady === false}
             />
             <button
-              className="chat-voice-btn"
-              onClick={() => setVoiceModeOpen(true)}
+              className={micClass}
+              onClick={toggleVoiceMode}
               disabled={sending || llmReady === false}
-              title="Voice mode — hands-free conversation"
+              title={micTitle}
             >
               <span className="material-symbols-outlined" style={{ fontSize: 18 }}>
-                graphic_eq
+                {micIcon}
               </span>
             </button>
             <button
@@ -453,33 +859,6 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
           </div>
         </div>
       </div>
-
-      {voiceModeOpen && (
-        <VoiceMode
-          sessionId={activeSession}
-          onSessionUpdate={(sid) => {
-            if (activeSession !== sid) setActiveSession(sid);
-            void loadSessions();
-          }}
-          onClose={() => {
-            setVoiceModeOpen(false);
-            // Refresh messages for the active session so the voice turns appear
-            if (activeSession) {
-              getChatMessages(activeSession)
-                .then((msgs) =>
-                  setMessages(
-                    msgs.map((m) => ({
-                      id: m.id,
-                      sender: m.sender,
-                      text: m.text,
-                    }))
-                  )
-                )
-                .catch(() => {});
-            }
-          }}
-        />
-      )}
     </>
   );
 }

@@ -114,7 +114,16 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             kind: "function".into(),
             function: ToolFunction {
                 name: "update_memory".into(),
-                description: "Edit an existing memory's content. Use when the user wants to fix a typo, clarify, or rewrite a memory. Find the memory by keywords from its current text.".into(),
+                description: "Edit an existing memory's content. Find by keywords. \
+                    CRITICAL: `new_content` REPLACES the entire memory text — it is NOT a patch \
+                    or delta. You MUST include everything from the original that should remain, \
+                    PLUS the user's new information, in one self-contained sentence. \
+                    Example: original = 'works as a full stack developer using Tauri and React'. \
+                    User says 'I also use Rust on the backend'. \
+                    new_content MUST be 'works as a full stack developer using Tauri (Rust \
+                    backend) and React' — NOT 'uses Rust' or 'uses Rust and React' (those \
+                    DELETE the Tauri/full-stack info). When in doubt, write the new memory as \
+                    if you were composing it from scratch, including all still-true context.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -124,7 +133,7 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                         },
                         "new_content": {
                             "type": "string",
-                            "description": "The corrected or rewritten memory, max 15 words."
+                            "description": "The COMPLETE replacement memory text — must preserve all still-relevant info from the original plus the user's update. Aim for one full sentence (up to 25 words), not a fragment."
                         }
                     },
                     "required": ["search", "new_content"]
@@ -168,7 +177,18 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             kind: "function".into(),
             function: ToolFunction {
                 name: "end_voice_session".into(),
-                description: "Call this ONLY when the user clearly signals they're done with the voice conversation — phrases like 'thanks, that's all', 'goodbye', 'I'm done', 'that's everything', 'talk to you later', etc. Always pair this tool call with a brief spoken farewell in your text response (e.g. 'Sounds good, talk soon.'). Do NOT call this just because a question was answered — only when the USER says they're wrapping up. Has no effect outside voice mode.".into(),
+                description: "Closes the voice conversation overlay. Only call this when the USER \
+                    explicitly signals they are done with the entire conversation, not just one \
+                    answer. Recognized wrap-up signals (English): 'thanks, that's all', 'thank \
+                    you, that's everything', 'I'm done', 'that's it for now', 'we're good', 'all \
+                    good', 'nothing else', 'goodbye', 'bye', 'talk later', 'see you', 'cool, \
+                    we're good', 'I'm out'. Also non-English equivalents like 'merci c'est tout' \
+                    or 'shukran khlas'. STRICT RULES: Do NOT call this after fulfilling a request \
+                    — the user may have more. Do NOT call it on first turns or any message that \
+                    contains a question, instruction, or new request. Do NOT add 'talk soon' or \
+                    'bye' to your text reply unless you are also calling this tool. When you DO \
+                    call it, pair with one short warm farewell sentence ('Talk soon.', 'Anytime, \
+                    later.') as your text reply.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -269,30 +289,74 @@ async fn complete_task(args: &Value, db: &Arc<Database>) -> Result<String, Strin
         .and_then(Value::as_str)
         .ok_or("Missing 'search'")?;
 
-    let pattern = format!("%{}%", search.to_lowercase());
-
-    // Find matching pending task
-    let row: Option<(String, String)> = {
+    // Fetch all pending tasks once, then score by how many search words appear
+    // in the description. A strict LIKE %search% match misses cases where the
+    // model phrases the search differently from the task ("voice mode rebuild"
+    // vs the task "Commit voice mode rebuild before launch") — multi-word AND
+    // matching is much more robust.
+    let pending: Vec<(String, String)> = {
         let conn = db.conn();
-        conn.query_row(
-            "SELECT id, description FROM action_items
-             WHERE completed = 0 AND LOWER(description) LIKE ?1
-             ORDER BY created_at DESC LIMIT 1",
-            [&pattern],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .ok()
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, description FROM action_items
+                 WHERE completed = 0
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
     };
 
-    let Some((id, description)) = row else {
-        return Ok(format!("No pending task matching '{}' found.", search));
+    if pending.is_empty() {
+        return Ok("No pending tasks to complete.".to_string());
+    }
+
+    let words: Vec<String> = search
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|w| w.len() > 2) // drop noise words like "to", "a", "is"
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    // Score each task by how many search words appear in its description.
+    let mut best: Option<(usize, &(String, String))> = None;
+    for task in &pending {
+        let desc_lower = task.1.to_lowercase();
+        let hits = words.iter().filter(|w| desc_lower.contains(w.as_str())).count();
+        if hits == 0 {
+            continue;
+        }
+        if best.map(|(s, _)| hits > s).unwrap_or(true) {
+            best = Some((hits, task));
+        }
+    }
+
+    let Some((_, (id, description))) = best else {
+        // Return a useful payload so the model can re-call with the right keywords.
+        let list = pending
+            .iter()
+            .take(10)
+            .map(|(_, d)| format!("- {}", d))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "No task matched '{}'. Pending tasks:\n{}\n\nCall complete_task again with keywords drawn from one of those exact descriptions.",
+            search, list
+        ));
     };
 
     {
         let conn = db.conn();
         conn.execute(
             "UPDATE action_items SET completed = 1, updated_at = datetime('now') WHERE id = ?1",
-            [&id],
+            [id],
         )
         .map_err(|e| format!("DB update failed: {}", e))?;
     }

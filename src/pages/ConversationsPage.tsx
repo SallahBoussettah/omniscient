@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useContext } from "react";
+import { ModelDownloadContext } from "../App";
 import {
   isPermissionGranted,
   requestPermission,
@@ -84,6 +85,24 @@ export function ConversationsPage({ onOpenConversation }: Props) {
   const [recording, setRecording] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
+  // Download progress lives at App level so it survives navigation
+  // away from the Conversations page mid-download.
+  const modelDownload = useContext(ModelDownloadContext);
+
+  // While the App-level download is active, this page is implicitly "loading"
+  // — even if the user just navigated back to it after triggering the
+  // download from a previous mount.
+  const isDownloading = modelLoading || modelDownload.active;
+
+  // When a background download finishes, the original page instance that
+  // awaited initTranscriber() may already be unmounted — so nobody set
+  // modelReady on this fresh mount. Re-check the file presence once the
+  // App-level state reports the download finished.
+  useEffect(() => {
+    if (!modelDownload.active && modelDownload.pct === 100) {
+      hasWhisperModel().then(setModelReady).catch(() => {});
+    }
+  }, [modelDownload.active, modelDownload.pct]);
   const [llmReady, setLlmReady] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState<TranscriptSegment[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -341,7 +360,7 @@ export function ConversationsPage({ onOpenConversation }: Props) {
                   )}s`
                 : "Listening"}
             </span>
-          ) : modelReady ? (
+          ) : modelReady && !isDownloading ? (
             <span className="status-pill">
               <span className="status-dot" />
               Idle
@@ -350,6 +369,7 @@ export function ConversationsPage({ onOpenConversation }: Props) {
             <button
               className="filter-pill"
               onClick={async () => {
+                if (isDownloading) return;
                 setModelLoading(true);
                 try {
                   await initTranscriber();
@@ -359,9 +379,13 @@ export function ConversationsPage({ onOpenConversation }: Props) {
                 }
                 setModelLoading(false);
               }}
-              disabled={modelLoading}
+              disabled={isDownloading}
             >
-              {modelLoading ? "Downloading model…" : "Set up listening"}
+              {isDownloading
+                ? modelDownload.pct !== null
+                  ? `Downloading model — ${modelDownload.pct}% (${modelDownload.doneMb} / ${modelDownload.totalMb} MB)`
+                  : "Downloading model…"
+                : "Set up listening"}
             </button>
           )}
         </div>

@@ -70,8 +70,31 @@ fn list_audio_devices() -> Vec<String> {
     audio::capture::list_input_devices()
 }
 
+/// Throttled progress emitter for the model download. Emits at most every
+/// ~150ms so we don't drown the IPC bus on a fast connection.
+fn make_progress_emitter(app: tauri::AppHandle) -> impl FnMut(u64, u64) {
+    let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    move |downloaded, total| {
+        let now = std::time::Instant::now();
+        let is_done = total > 0 && downloaded >= total;
+        if !is_done && now.duration_since(last) < std::time::Duration::from_millis(150) {
+            return;
+        }
+        last = now;
+        let _ = app.emit(
+            "model-download-progress",
+            serde_json::json!({
+                "downloaded": downloaded,
+                "total": total,
+                "done": is_done,
+            }),
+        );
+    }
+}
+
 #[tauri::command]
 async fn start_recording(
+    app: tauri::AppHandle,
     audio_state: tauri::State<'_, Arc<AudioState>>,
     stream_holder: tauri::State<'_, StreamHolder>,
     vad_state: tauri::State<'_, Arc<Mutex<Vad>>>,
@@ -91,7 +114,7 @@ async fn start_recording(
         let needs_init = transcriber.0.lock().map_err(|e| e.to_string())?.is_none();
         if needs_init {
             log::info!("Transcriber not initialized — loading model...");
-            let model_path = transcribe::ensure_model().await?;
+            let model_path = transcribe::ensure_model(make_progress_emitter(app.clone())).await?;
             let t = Transcriber::new(&model_path)?;
             *transcriber.0.lock().map_err(|e| e.to_string())? = Some(t);
             log::info!("Transcriber ready");
@@ -224,9 +247,10 @@ fn get_recording_status(audio_state: tauri::State<'_, Arc<AudioState>>) -> Recor
 /// Async so the download doesn't block the Tauri IPC thread.
 #[tauri::command]
 async fn init_transcriber(
+    app: tauri::AppHandle,
     transcriber: tauri::State<'_, TranscriberHolder>,
 ) -> Result<String, String> {
-    let model_path = transcribe::ensure_model().await?;
+    let model_path = transcribe::ensure_model(make_progress_emitter(app)).await?;
 
     // Loading the model itself is sync but fast (~1-2s)
     let t = Transcriber::new(&model_path)?;
@@ -916,6 +940,8 @@ async fn chat_send_stream(
     let asst_msg_id = uuid::Uuid::new_v4().to_string();
     let stream_id = asst_msg_id.clone();
     let app_for_emit = app.clone();
+    let app_for_retry = app.clone();
+    let retry_id = asst_msg_id.clone();
 
     let (answer, sources, tools_called) = rag::chat_with_context_stream(
         &llm,
@@ -930,6 +956,12 @@ async fn chat_send_stream(
                     "id": stream_id,
                     "delta": delta,
                 }),
+            );
+        },
+        || {
+            let _ = app_for_retry.emit(
+                "chat-retry",
+                serde_json::json!({ "id": retry_id }),
             );
         },
     )

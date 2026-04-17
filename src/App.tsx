@@ -1,5 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, createContext } from "react";
 import { listen } from "@tauri-apps/api/event";
+
+export interface ModelDownloadState {
+  active: boolean;
+  pct: number | null;
+  doneMb: number;
+  totalMb: number;
+}
+
+export const ModelDownloadContext = createContext<ModelDownloadState>({
+  active: false,
+  pct: null,
+  doneMb: 0,
+  totalMb: 0,
+});
 import { Sidebar } from "./components/Sidebar";
 import { ConversationsPage } from "./pages/ConversationsPage";
 import { ConversationDetailPage } from "./pages/ConversationDetailPage";
@@ -32,6 +46,38 @@ export function App() {
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
   const [pendingChatSession, setPendingChatSession] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
+  const [modelDownload, setModelDownload] = useState<ModelDownloadState>({
+    active: false,
+    pct: null,
+    doneMb: 0,
+    totalMb: 0,
+  });
+
+  // Listen for model download progress at the App level so navigating away
+  // from the page that triggered the download doesn't lose the UI state.
+  useEffect(() => {
+    const unlistenPromise = listen<{
+      downloaded: number;
+      total: number;
+      done: boolean;
+    }>("model-download-progress", (event) => {
+      const { downloaded, total, done } = event.payload;
+      const totalMb = Math.round(total / (1024 * 1024));
+      const doneMb = Math.round(downloaded / (1024 * 1024));
+      const pct = total > 0 ? Math.min(100, Math.round((downloaded * 100) / total)) : null;
+      setModelDownload({ active: !done, pct, doneMb, totalMb });
+      if (done) {
+        // Clear after a short delay so the 100% pip is visible.
+        setTimeout(
+          () => setModelDownload({ active: false, pct: null, doneMb: 0, totalMb: 0 }),
+          800
+        );
+      }
+    });
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, []);
 
   // Listen for "open-chat-session" event from the floating bar.
   // Switches to the Chat page and (optionally) selects a specific session.
@@ -139,11 +185,13 @@ export function App() {
   const isChat = activePage === "chat";
 
   return (
-    <div className={`app-layout ${recording ? "is-listening" : ""}`}>
-      <Sidebar activePage={activePage} onNavigate={navigate} />
-      <main className={`app-main ${isChat ? "app-main--chat" : ""}`}>
-        {isChat ? renderPage() : <div className="app-content">{renderPage()}</div>}
-      </main>
-    </div>
+    <ModelDownloadContext.Provider value={modelDownload}>
+      <div className={`app-layout ${recording ? "is-listening" : ""}`}>
+        <Sidebar activePage={activePage} onNavigate={navigate} />
+        <main className={`app-main ${isChat ? "app-main--chat" : ""}`}>
+          {isChat ? renderPage() : <div className="app-content">{renderPage()}</div>}
+        </main>
+      </div>
+    </ModelDownloadContext.Provider>
   );
 }

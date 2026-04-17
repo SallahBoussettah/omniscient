@@ -179,6 +179,18 @@ You: "Marcus recommended the book The Overstory."
 User: "Forget the bit about the movie at 10am"
 You: → call delete_memory(search="movie 10am")
 You: "Removed."
+
+User: "Thanks, that's all."
+You: → call end_voice_session
+You: "Anytime — talk soon."
+
+User: "Thank you, that's everything."
+You: → call end_voice_session
+You: "You got it. Catch you later."
+
+User: "I'm done, bye."
+You: → call end_voice_session
+You: "Bye, Salah."
 "#;
 
 fn current_system_prompt() -> String {
@@ -194,6 +206,79 @@ fn current_system_prompt() -> String {
 /// Tool names let the caller react to side-effecting calls like
 /// `end_voice_session` without parsing the answer text.
 pub type ChatTurn = (String, Vec<SearchHit>, Vec<String>);
+
+/// Tools that actually mutate user data. Used by the post-response
+/// verification check below to detect "claim without action" hallucinations.
+const MUTATING_TOOLS: &[&str] = &[
+    "create_task",
+    "update_task",
+    "complete_task",
+    "create_memory",
+    "update_memory",
+    "delete_memory",
+];
+
+/// Heuristic: does the assistant's text claim it performed a side-effecting
+/// action? Small LLMs sometimes say "I've updated…" or "Done!" without
+/// actually invoking the tool, so we cross-check this against `tools_called`
+/// and force a re-prompt when they disagree.
+fn assistant_claims_action(text: &str) -> bool {
+    let t = text.to_lowercase();
+    const PHRASES: &[&str] = &[
+        "i've updated",
+        "i have updated",
+        "updated it",
+        "updated the",
+        "i've added",
+        "i have added",
+        "added it",
+        "added the",
+        "i've created",
+        "i have created",
+        "created it",
+        "i've removed",
+        "i have removed",
+        "removed it",
+        "removed the",
+        "i've deleted",
+        "i have deleted",
+        "deleted it",
+        "i've saved",
+        "i have saved",
+        "saved it",
+        "i've marked",
+        "i have marked",
+        "marked as complete",
+        "marked it as",
+        "i've completed",
+        "completed it",
+        "i've forgotten",
+        "forgot it",
+        "i've changed",
+        "i have changed",
+        "changed it",
+        "i've fixed",
+        "i have fixed",
+        "fixed it",
+        "i've corrected",
+        "corrected it",
+        "all done",
+        "got it done",
+    ];
+    PHRASES.iter().any(|p| t.contains(p))
+}
+
+fn called_mutating_tool(tools: &[String]) -> bool {
+    tools.iter().any(|t| MUTATING_TOOLS.contains(&t.as_str()))
+}
+
+/// System message we inject when the model claims an action without calling
+/// any mutating tool. Forces it to actually perform the operation.
+const VERIFY_SYSTEM_MSG: &str = "VERIFY — Your previous reply claimed you performed an action \
+    (e.g. 'I've updated…', 'Done', 'changed it') but you did NOT call any of the mutating tools \
+    (create_task / update_task / complete_task / create_memory / update_memory / delete_memory). \
+    The user's data is UNCHANGED. Call the correct tool NOW with the user's exact requested values, \
+    then respond with ONE short confirmation sentence describing what the tool actually returned.";
 
 /// Run a RAG-augmented chat turn with tool-calling support.
 /// Loops up to 5 times executing tool calls and feeding results back until
@@ -221,9 +306,10 @@ pub async fn chat_with_context(
 
     let tools = tools::tool_definitions();
     let mut tools_called: Vec<String> = Vec::new();
+    let mut verify_used = false;
 
     // Tool-call loop — bounded to prevent infinite loops
-    for iteration in 0..5 {
+    for iteration in 0..6 {
         let response = llm
             .chat_messages_with_tools(&messages, Some(&tools))
             .await?;
@@ -238,7 +324,22 @@ pub async fn chat_with_context(
         );
 
         if calls.is_empty() {
-            // Final answer
+            // Possible final answer — verify the model didn't claim an action
+            // it never actually performed. One retry max.
+            if !verify_used
+                && assistant_claims_action(&response.content)
+                && !called_mutating_tool(&tools_called)
+            {
+                log::warn!(
+                    "Action claimed without tool call — forcing verification retry. \
+                     Reply: {:?}",
+                    response.content.chars().take(120).collect::<String>()
+                );
+                verify_used = true;
+                messages.push(response);
+                messages.push(ChatMessage::system(VERIFY_SYSTEM_MSG));
+                continue;
+            }
             return Ok((response.content, hits, tools_called));
         }
 
@@ -282,16 +383,18 @@ pub async fn chat_with_context(
 /// Streaming version: calls `on_token` for every text delta from the model.
 /// Tool-calling iterations are silent — only the FINAL text response streams
 /// to the user, so they don't see partial tool-aware output.
-pub async fn chat_with_context_stream<F>(
+pub async fn chat_with_context_stream<F, R>(
     llm: &LlmClient,
     embedder: &Embedder,
     db: &Arc<Database>,
     history: &[ChatMessage],
     user_message: &str,
     mut on_token: F,
+    mut on_retry: R,
 ) -> Result<ChatTurn, String>
 where
     F: FnMut(&str) + Send,
+    R: FnMut() + Send,
 {
     let hits = search(embedder, db, user_message, 6)
         .await
@@ -309,10 +412,11 @@ where
 
     let tool_defs = tools::tool_definitions();
     let mut tools_called: Vec<String> = Vec::new();
+    let mut verify_used = false;
 
     let mut accumulated = String::new();
 
-    for iteration in 0..5 {
+    for iteration in 0..6 {
         let mut iteration_text = String::new();
         let response = llm
             .chat_messages_stream(&messages, Some(&tool_defs), |t| {
@@ -332,7 +436,26 @@ where
         );
 
         if calls.is_empty() {
-            // Final answer — already streamed
+            // Verify the model didn't claim an action it never performed.
+            // The first attempt was already streamed live to the user. We
+            // signal the caller (via on_retry) so it can wipe what was
+            // emitted before — voice mode resets the karaoke + cancels TTS,
+            // chat replaces the displayed bubble. The retried response
+            // streams cleanly through on_token afterward.
+            if !verify_used
+                && assistant_claims_action(&response.content)
+                && !called_mutating_tool(&tools_called)
+            {
+                log::warn!(
+                    "Stream: action claimed without tool call — forcing verification retry."
+                );
+                verify_used = true;
+                on_retry();
+                accumulated.clear();
+                messages.push(response);
+                messages.push(ChatMessage::system(VERIFY_SYSTEM_MSG));
+                continue;
+            }
             return Ok((accumulated, hits, tools_called));
         }
 
