@@ -24,6 +24,7 @@ Early but functional. The core loop works end-to-end: record → transcribe → 
 | 3. LLM pipeline (structure, action items, memories) | ✅ |
 | 4. RAG chat with tool calling (create/edit/delete tasks and memories) | ✅ |
 | 4.5. Voice mode — streaming chat, Kokoro TTS, karaoke highlight, end-on-intent | ✅ |
+| 4.6. Polish — data export (JSON/MD), chat session rename + LLM auto-title, voice picker | ✅ |
 | 5. Screen capture + OCR + rewind | planned |
 | 6. Proactive assistants (focus tracking, distraction nudges) | planned |
 | 7. Always-on-top floating bar | planned |
@@ -96,6 +97,8 @@ Settings are stored in SQLite under `~/.local/share/omniscient/omniscient.db`.
 The Settings page lets you:
 - Switch between installed Ollama chat models (selection persists)
 - See which embedding model is active
+- Pick the speaking voice (5 curated Kokoro voices, with previews)
+- Export everything as JSON (machine-readable) or Markdown (human-readable)
 - View the audio and capture configuration
 
 ## Data location

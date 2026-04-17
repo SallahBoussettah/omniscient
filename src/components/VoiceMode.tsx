@@ -10,6 +10,7 @@ import {
   getRecordingStatus,
   chatSendStream,
   ttsSpeak,
+  getTtsVoice,
 } from "../lib/tauri";
 import type {
   TranscriptSegment,
@@ -76,6 +77,10 @@ export function VoiceMode({ sessionId, onSessionUpdate, onClose }: VoiceModeProp
   // whenever we want to listen RIGHT NOW (manual interrupt) so the timer
   // doesn't double-fire startRecording after we've already started one.
   const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Snapshot of the user's voice preference. Loaded once on mount; we don't
+  // hot-swap mid-session because that'd produce a Frankenstein response with
+  // different voices on different sentences.
+  const ttsVoiceRef = useRef<string>("af_heart");
   // Set when the LLM calls `end_voice_session` — once the current speech
   // finishes, we close instead of re-arming the mic.
   const shouldCloseAfterSpeechRef = useRef(false);
@@ -311,7 +316,7 @@ export function VoiceMode({ sessionId, onSessionUpdate, onClose }: VoiceModeProp
 
   function synthAndQueue(text: string, onPlayStart: () => void) {
     // Kick off the HTTP request immediately so synthesis is parallel.
-    const clipPromise = ttsSpeak(text);
+    const clipPromise = ttsSpeak(text, ttsVoiceRef.current);
     // Chain enqueue so clips join the player in sentence order.
     enqueueChainRef.current = enqueueChainRef.current.then(async () => {
       if (cancelledRef.current) return;
@@ -403,6 +408,11 @@ export function VoiceMode({ sessionId, onSessionUpdate, onClose }: VoiceModeProp
 
   useEffect(() => {
     cancelledRef.current = false;
+    getTtsVoice()
+      .then((v) => {
+        ttsVoiceRef.current = v;
+      })
+      .catch(() => {});
     void startListening();
 
     return () => {

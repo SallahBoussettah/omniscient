@@ -5,9 +5,12 @@ import {
   listChatSessions,
   getChatMessages,
   deleteChatSession,
+  renameChatSession,
+  autoTitleChatSession,
   checkLlmStatus,
   reindexEmbeddings,
   ttsSpeak,
+  getTtsVoice,
 } from "../lib/tauri";
 import type {
   ChatMessage as ChatMsg,
@@ -42,6 +45,9 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
   const ttsRef = useRef<TtsPlayer | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const ttsVoiceRef = useRef<string>("af_heart");
 
   function getTts(): TtsPlayer {
     if (!ttsRef.current) ttsRef.current = new TtsPlayer();
@@ -58,7 +64,7 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
     tts.stop();
     setSpeakingId(id);
     try {
-      const clip = await ttsSpeak(text);
+      const clip = await ttsSpeak(text, ttsVoiceRef.current);
       await tts.enqueue(clip);
       // Auto-clear when done.
       const unsub = tts.subscribe((s) => {
@@ -84,6 +90,11 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
   useEffect(() => {
     checkLlmStatus().then(setLlmReady).catch(() => setLlmReady(false));
     loadSessions();
+    getTtsVoice()
+      .then((v) => {
+        ttsVoiceRef.current = v;
+      })
+      .catch(() => {});
     reindexEmbeddings()
       .then((r) => {
         if (r.total > 0) {
@@ -145,6 +156,10 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
 
+    // Track whether this is a brand-new session — if so, after the first
+    // turn completes we ask the LLM for a real title.
+    const isNewSession = !activeSession;
+
     // Optimistic user + empty assistant placeholder we stream into
     const tempUserId = `tmp-user-${Date.now()}`;
     const streamingId = `tmp-asst-${Date.now()}`;
@@ -185,6 +200,13 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
         setActiveSession(result.session_id);
       }
       await loadSessions();
+      // Brand-new session: replace the truncated-message default title with
+      // an LLM-generated one. Fire-and-forget so it doesn't block the user.
+      if (isNewSession) {
+        void autoTitleChatSession(result.session_id)
+          .then(() => loadSessions())
+          .catch(() => {});
+      }
     } catch (err) {
       console.error("Chat send failed:", err);
       setMessages((prev) =>
@@ -223,6 +245,27 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
     }
   }
 
+  function startRename(id: string, currentTitle: string | null, e: React.MouseEvent) {
+    e.stopPropagation();
+    setRenamingId(id);
+    setRenameDraft(currentTitle || "");
+  }
+
+  async function commitRename(id: string) {
+    const title = renameDraft.trim();
+    if (!title) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await renameChatSession(id, title);
+      await loadSessions();
+    } catch (err) {
+      console.error("Rename failed:", err);
+    }
+    setRenamingId(null);
+  }
+
   return (
     <>
       <header className="page-header">
@@ -244,25 +287,70 @@ export function ChatPage({ initialSessionId, onSessionConsumed }: ChatPageProps 
       {/* Session strip */}
       {sessions.length > 0 && (
         <div className="chat-history-strip">
-          {sessions.map((s) => (
-            <button
-              key={s.id}
-              className={`chat-history-pill ${activeSession === s.id ? "active" : ""}`}
-              onClick={() => setActiveSession(s.id)}
-              title={s.title || "Untitled chat"}
-            >
-              <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>
-                {s.title || "Untitled chat"}
-              </span>
-              <span
-                className="material-symbols-outlined"
-                style={{ fontSize: 14, opacity: 0.5 }}
-                onClick={(e) => handleDeleteSession(s.id, e)}
+          {sessions.map((s) => {
+            if (renamingId === s.id) {
+              return (
+                <div
+                  key={s.id}
+                  className={`chat-history-pill active`}
+                  style={{ padding: "4px 8px" }}
+                >
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onBlur={() => commitRename(s.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitRename(s.id);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setRenamingId(null);
+                      }
+                    }}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      outline: "none",
+                      color: "inherit",
+                      font: "inherit",
+                      width: 160,
+                    }}
+                  />
+                </div>
+              );
+            }
+            return (
+              <button
+                key={s.id}
+                className={`chat-history-pill ${activeSession === s.id ? "active" : ""}`}
+                onClick={() => setActiveSession(s.id)}
+                onDoubleClick={(e) => startRename(s.id, s.title, e)}
+                title={`${s.title || "Untitled chat"} — double-click to rename`}
               >
-                close
-              </span>
-            </button>
-          ))}
+                <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {s.title || "Untitled chat"}
+                </span>
+                <span
+                  className="material-symbols-outlined"
+                  style={{ fontSize: 13, opacity: 0.45 }}
+                  onClick={(e) => startRename(s.id, s.title, e)}
+                  title="Rename"
+                >
+                  edit
+                </span>
+                <span
+                  className="material-symbols-outlined"
+                  style={{ fontSize: 14, opacity: 0.5 }}
+                  onClick={(e) => handleDeleteSession(s.id, e)}
+                  title="Delete"
+                >
+                  close
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 

@@ -229,6 +229,19 @@ export async function ttsReady(): Promise<boolean> {
   return invoke("tts_ready");
 }
 
+// ===== EXPORT =====
+
+export interface ExportResult {
+  path: string;
+  bytes: number;
+}
+
+/** Write a full JSON or Markdown export to `path`. Format is inferred
+ *  from the extension (.md → markdown, else JSON). */
+export async function exportData(path: string): Promise<ExportResult> {
+  return invoke("export_data", { path });
+}
+
 export interface ChatSession {
   id: string;
   title: string | null;
@@ -253,6 +266,35 @@ export async function getChatMessages(sessionId: string): Promise<ChatMessage[]>
 export async function deleteChatSession(sessionId: string): Promise<string> {
   return invoke("delete_chat_session", { sessionId });
 }
+
+export async function renameChatSession(sessionId: string, title: string): Promise<string> {
+  return invoke("rename_chat_session", { sessionId, title });
+}
+
+/** Ask the LLM to generate a 3-5 word title and persist it. */
+export async function autoTitleChatSession(sessionId: string): Promise<string> {
+  return invoke("auto_title_chat_session", { sessionId });
+}
+
+// ===== TTS VOICE PREFERENCE =====
+
+export async function getTtsVoice(): Promise<string> {
+  return invoke("get_tts_voice");
+}
+
+export async function setTtsVoice(voice: string): Promise<string> {
+  return invoke("set_tts_voice", { voice });
+}
+
+/** Curated set of Kokoro voices surfaced in the UI. The model ships ~54 but
+ *  we keep the picker small. Add more here if you want to expose them. */
+export const TTS_VOICE_OPTIONS = [
+  { id: "af_heart",  label: "Heart",   description: "American female · warm, default" },
+  { id: "af_bella",  label: "Bella",   description: "American female · soft, friendly" },
+  { id: "af_sky",    label: "Sky",     description: "American female · airy, light" },
+  { id: "bm_george", label: "George",  description: "British male · calm, measured" },
+  { id: "bf_emma",   label: "Emma",    description: "British female · crisp, clear" },
+] as const;
 
 export interface ReindexResult {
   memories_indexed: number;

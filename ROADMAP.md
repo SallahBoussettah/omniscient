@@ -76,6 +76,15 @@ An always-on AI assistant for Linux that sees your screen, hears your conversati
 
 ---
 
+## Phase 4.6: Polish — Data + Chat + Voice Settings ✓
+
+- [x] Data export — JSON or Markdown dump of conversations (with full transcripts), memories, tasks, and chat sessions, written via Tauri save dialog
+- [x] Chat session rename — double-click a session pill (or click the pencil) to inline-edit the title; persists via `rename_chat_session`
+- [x] LLM auto-title — first turn of a brand-new session triggers `auto_title_chat_session` which asks the active model for a 3–5 word topic title and replaces the truncated-message default
+- [x] Voice picker — 5 curated Kokoro voices in Settings (af_heart, af_bella, af_sky, bm_george, bf_emma) with one-tap preview; selection persisted to `settings` table and read by ChatPage speak button + VoiceMode
+
+---
+
 ## Phase 5: Screen Capture + OCR + Rewind
 
 - [ ] PipeWire XDG Desktop Portal screen capture

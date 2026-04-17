@@ -1,5 +1,6 @@
 mod audio;
 mod db;
+mod exporter;
 mod llm;
 mod tts;
 
@@ -33,11 +34,22 @@ unsafe impl Sync for TranscriberHolder {}
 #[tauri::command]
 fn get_db_stats(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
     let conn = db.conn();
+    // Match the same filters the list views use, so the header stat agrees
+    // with what the user sees on each page. Conversations and memories both
+    // have a `discarded`/`is_dismissed` flag for soft deletion.
     let conversations: i64 = conn
-        .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM conversations WHERE discarded = 0",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let memories: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE is_dismissed = 0",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let action_items: i64 = conn
         .query_row("SELECT COUNT(*) FROM action_items", [], |r| r.get(0))
@@ -950,6 +962,138 @@ async fn chat_send_stream(
     Ok(result)
 }
 
+/// Rename a chat session. Used both for manual renames and the LLM auto-title.
+#[tauri::command]
+fn rename_chat_session(
+    session_id: String,
+    title: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err("Title cannot be empty".to_string());
+    }
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE chat_sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![trimmed, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(trimmed.to_string())
+}
+
+/// Ask the LLM for a 3-5 word title summarizing the session and persist it.
+/// Used after the first turn of a brand-new session to replace the truncated-
+/// message default with something meaningful.
+#[tauri::command]
+async fn auto_title_chat_session(
+    session_id: String,
+    llm: tauri::State<'_, Arc<LlmClient>>,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    // Pull the first user + assistant message
+    let (user_msg, assistant_msg) = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT sender, text FROM messages WHERE session_id = ?1
+                 ORDER BY created_at LIMIT 4",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([&session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        let u = rows.iter().find(|r| r.0 == "user").map(|r| r.1.clone()).unwrap_or_default();
+        let a = rows.iter().find(|r| r.0 == "assistant").map(|r| r.1.clone()).unwrap_or_default();
+        (u, a)
+    };
+
+    if user_msg.trim().is_empty() {
+        return Err("No user message to title".to_string());
+    }
+
+    // Truncate the assistant message to keep the prompt tight
+    let assistant_excerpt: String = assistant_msg.chars().take(300).collect();
+
+    let system = "You generate ultra-concise titles for a chat session. \
+                  Respond with ONLY the title — 3 to 5 words, no quotes, no period, \
+                  Title Case. The title should describe the topic, not the action. \
+                  Examples: \
+                  'Overstory Book Notes', 'Q4 Marketing Plan', 'React Hook Question', 'Marcus Birthday Plan'.";
+    let user = format!(
+        "Generate a 3-5 word title for this chat:\n\nUser: {}\n\nAssistant: {}",
+        user_msg.chars().take(400).collect::<String>(),
+        assistant_excerpt
+    );
+
+    let raw = llm.chat(system, &user).await?;
+    // The LLM might include quotes, periods, or newlines — strip them.
+    let title = raw
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c == '.' || c == ',')
+        .trim()
+        .to_string();
+
+    if title.is_empty() {
+        return Err("LLM returned empty title".to_string());
+    }
+
+    // Cap length defensively — 60 chars matches the truncation-default the
+    // session was created with.
+    let title: String = title.chars().take(60).collect();
+
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE chat_sessions SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![title, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(title)
+}
+
+// ----- TTS voice preference -----
+
+const TTS_VOICE_KEY: &str = "tts_voice";
+const DEFAULT_TTS_VOICE: &str = "af_heart";
+
+#[tauri::command]
+fn get_tts_voice(db: tauri::State<'_, Arc<Database>>) -> Result<String, String> {
+    let conn = db.conn();
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [TTS_VOICE_KEY],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(v.unwrap_or_else(|| DEFAULT_TTS_VOICE.to_string()))
+}
+
+#[tauri::command]
+fn set_tts_voice(
+    voice: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<String, String> {
+    let trimmed = voice.trim();
+    if trimmed.is_empty() {
+        return Err("Voice cannot be empty".to_string());
+    }
+    let conn = db.conn();
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![TTS_VOICE_KEY, trimmed],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(trimmed.to_string())
+}
+
 #[tauri::command]
 fn list_chat_sessions(db: tauri::State<'_, Arc<Database>>) -> Result<serde_json::Value, String> {
     let conn = db.conn();
@@ -1264,6 +1408,28 @@ async fn process_conversation_cmd(
 }
 
 // =====================================================
+// EXPORT
+// =====================================================
+
+#[derive(serde::Serialize)]
+struct ExportResult {
+    path: String,
+    bytes: usize,
+}
+
+/// Write a full JSON or Markdown export of the user's data to `path`.
+/// The format is inferred from the file extension (.md → markdown, else JSON).
+#[tauri::command]
+fn export_data(
+    path: String,
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<ExportResult, String> {
+    let p = std::path::PathBuf::from(&path);
+    let bytes = exporter::write_to_path(&db.inner().clone(), &p)?;
+    Ok(ExportResult { path, bytes })
+}
+
+// =====================================================
 // TTS
 // =====================================================
 
@@ -1384,6 +1550,23 @@ fn show_main_window_with_chat(
 pub fn run() {
     let db_path = db::db_path();
     let database = Arc::new(Database::open(&db_path).expect("failed to open database"));
+
+    // Clean up orphaned `in_progress` conversations — these can pile up if
+    // the app crashes mid-recording or if voice mode's cancelRecording
+    // failed silently. CASCADE drops their transcript_segments + memories
+    // + action_items so the stats stay honest.
+    {
+        let conn = database.conn();
+        match conn.execute(
+            "DELETE FROM conversations WHERE status = 'in_progress'",
+            [],
+        ) {
+            Ok(n) if n > 0 => log::info!("Startup cleanup: removed {} orphaned in-progress conversation(s)", n),
+            Ok(_) => {}
+            Err(e) => log::warn!("Startup cleanup failed: {}", e),
+        }
+    }
+
     let audio_state = Arc::new(AudioState::new());
     let stream_holder = StreamHolder(Mutex::new(None));
     let transcriber_holder = TranscriberHolder(Mutex::new(None));
@@ -1426,6 +1609,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1567,6 +1751,11 @@ pub fn run() {
             delete_memory,
             tts_speak,
             tts_ready,
+            export_data,
+            rename_chat_session,
+            auto_title_chat_session,
+            get_tts_voice,
+            set_tts_voice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

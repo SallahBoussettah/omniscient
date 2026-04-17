@@ -11,6 +11,7 @@
     "core:window:default",
     "core:webview:default",
     "core:event:default",
-    "notification:default"
+    "notification:default",
+    "dialog:default"
   ]
 }
